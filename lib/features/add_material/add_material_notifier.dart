@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:ffmpeg_kit_audio_flutter/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_audio_flutter/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_audio_flutter/return_code.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +24,8 @@ part 'add_material_notifier.g.dart';
 @riverpod
 class AddMaterialNotifier extends _$AddMaterialNotifier {
   static const MethodChannel _mediaFolderChannel = MethodChannel('focus_flow/media_folder');
+  static const int _videoCompressionThresholdBytes = 25 * 1024 * 1024;
+  static const int _audioCompressionThresholdBytes = 5 * 1024 * 1024;
   final Uuid _uuid = const Uuid();
   final PdfTocParser _parser = PdfTocParser();
 
@@ -151,6 +155,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       materialId,
       current.selectedPaths,
       selectedFolderPath: current.selectedFolderPath,
+      type: current.type,
     );
     final repository = ref.read(materialRepositoryProvider);
     final firstFilePath = copiedPaths.isEmpty ? null : copiedPaths.first;
@@ -290,6 +295,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     String materialId,
     List<String> sourcePaths, {
     required String? selectedFolderPath,
+    required MaterialType type,
   }) async {
     if (sourcePaths.isEmpty) return const [];
     final docsDir = await getApplicationDocumentsDirectory();
@@ -303,10 +309,14 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       final relativePath = selectedFolderPath == null
           ? path.basename(sourcePath)
           : path.relative(sourcePath, from: selectedFolderPath);
-      final destination = path.join(materialDir.path, relativePath);
-      await Directory(path.dirname(destination)).create(recursive: true);
-      await File(sourcePath).copy(destination);
-      copied.add(destination);
+      copied.add(
+        await _copyOrOptimizeMediaFile(
+          sourcePath: sourcePath,
+          destinationRoot: materialDir.path,
+          relativePath: relativePath,
+          type: type,
+        ),
+      );
     }
     return copied;
   }
@@ -453,6 +463,226 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  Future<String> _copyOrOptimizeMediaFile({
+    required String sourcePath,
+    required String destinationRoot,
+    required String relativePath,
+    required MaterialType type,
+  }) async {
+    final sourceFile = File(sourcePath);
+    final originalDestination = path.join(destinationRoot, relativePath);
+    await Directory(path.dirname(originalDestination)).create(recursive: true);
+
+    if (!_shouldCompressFile(sourceFile: sourceFile, type: type)) {
+      await sourceFile.copy(originalDestination);
+      return originalDestination;
+    }
+
+    final optimizedDestination = _optimizedDestinationPath(
+      destinationRoot: destinationRoot,
+      relativePath: relativePath,
+      type: type,
+    );
+    await Directory(path.dirname(optimizedDestination)).create(recursive: true);
+
+    final compressed = await _compressMediaFile(
+      sourcePath: sourcePath,
+      destinationPath: optimizedDestination,
+      type: type,
+    );
+
+    if (compressed != null) {
+      return compressed;
+    }
+
+    if (await File(optimizedDestination).exists()) {
+      await File(optimizedDestination).delete();
+    }
+    await sourceFile.copy(originalDestination);
+    return originalDestination;
+  }
+
+  bool _shouldCompressFile({
+    required File sourceFile,
+    required MaterialType type,
+  }) {
+    final length = sourceFile.lengthSync();
+    return switch (type) {
+      MaterialType.video => length >= _videoCompressionThresholdBytes,
+      MaterialType.audio => length >= _audioCompressionThresholdBytes,
+      _ => false,
+    };
+  }
+
+  String _optimizedDestinationPath({
+    required String destinationRoot,
+    required String relativePath,
+    required MaterialType type,
+  }) {
+    final normalizedDirectory = path.dirname(relativePath);
+    final baseName = path.basenameWithoutExtension(relativePath);
+    final originalExtension = path.extension(relativePath).replaceFirst('.', '').toLowerCase();
+    final optimizedExtension = switch (type) {
+      MaterialType.video => '.mp4',
+      MaterialType.audio => '.m4a',
+      _ => path.extension(relativePath),
+    };
+    final optimizedName = originalExtension.isEmpty
+        ? '${baseName}_focusflow$optimizedExtension'
+        : '${baseName}_${originalExtension}_focusflow$optimizedExtension';
+    return normalizedDirectory == '.'
+        ? path.join(destinationRoot, optimizedName)
+        : path.join(destinationRoot, normalizedDirectory, optimizedName);
+  }
+
+  Future<String?> _compressMediaFile({
+    required String sourcePath,
+    required String destinationPath,
+    required MaterialType type,
+  }) async {
+    final sourceFile = File(sourcePath);
+    final compressionArgs = await _compressionArguments(
+      sourcePath: sourcePath,
+      destinationPath: destinationPath,
+      type: type,
+    );
+    if (compressionArgs == null) return null;
+
+    try {
+      final session = await FFmpegKit.executeWithArguments(compressionArgs);
+      final returnCode = await session.getReturnCode();
+      final outputFile = File(destinationPath);
+      if (!ReturnCode.isSuccess(returnCode) || !await outputFile.exists()) {
+        return null;
+      }
+
+      final originalSize = await sourceFile.length();
+      final compressedSize = await outputFile.length();
+      if (compressedSize <= 0 || compressedSize >= originalSize) {
+        await outputFile.delete();
+        return null;
+      }
+
+      return destinationPath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<String>?> _compressionArguments({
+    required String sourcePath,
+    required String destinationPath,
+    required MaterialType type,
+  }) async {
+    return switch (type) {
+      MaterialType.video => _videoCompressionArguments(
+          sourcePath: sourcePath,
+          destinationPath: destinationPath,
+        ),
+      MaterialType.audio => _audioCompressionArguments(
+          sourcePath: sourcePath,
+          destinationPath: destinationPath,
+        ),
+      _ => null,
+    };
+  }
+
+  Future<List<String>> _videoCompressionArguments({
+    required String sourcePath,
+    required String destinationPath,
+  }) async {
+    final dimensions = await _probeVideoDimensions(sourcePath);
+    final args = <String>[
+      '-y',
+      '-i',
+      sourcePath,
+      '-map_metadata',
+      '0',
+      '-movflags',
+      '+faststart',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '30',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+    ];
+
+    final scale = _downscaleFilter(dimensions);
+    if (scale != null) {
+      args.addAll(['-vf', scale]);
+    }
+
+    args.add(destinationPath);
+    return args;
+  }
+
+  Future<List<String>> _audioCompressionArguments({
+    required String sourcePath,
+    required String destinationPath,
+  }) async {
+    return <String>[
+      '-y',
+      '-i',
+      sourcePath,
+      '-map_metadata',
+      '0',
+      '-vn',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '96k',
+      destinationPath,
+    ];
+  }
+
+  Future<({int width, int height})?> _probeVideoDimensions(String filePath) async {
+    try {
+      final session = await FFprobeKit.getMediaInformation(filePath);
+      final info = session.getMediaInformation();
+      final videoStream = info?.getStreams().firstWhere(
+            (stream) => stream.getType()?.toLowerCase() == 'video',
+          );
+      final width = videoStream?.getWidth();
+      final height = videoStream?.getHeight();
+      if (width == null || height == null || width <= 0 || height <= 0) {
+        return null;
+      }
+      return (width: width, height: height);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _downscaleFilter(({int width, int height})? dimensions) {
+    if (dimensions == null) return null;
+
+    const maxEdge = 1280;
+    final width = dimensions.width;
+    final height = dimensions.height;
+    if (width <= maxEdge && height <= maxEdge) {
+      return null;
+    }
+
+    if (width >= height) {
+      final scaledHeight = _evenDimension((height * maxEdge) / width);
+      return 'scale=$maxEdge:$scaledHeight';
+    }
+
+    final scaledWidth = _evenDimension((width * maxEdge) / height);
+    return 'scale=$scaledWidth:$maxEdge';
+  }
+
+  int _evenDimension(num value) {
+    final rounded = value.round();
+    if (rounded <= 2) return 2;
+    return rounded.isEven ? rounded : rounded - 1;
   }
 }
 
