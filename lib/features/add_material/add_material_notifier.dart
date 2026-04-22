@@ -31,6 +31,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       author: '',
       source: '',
       selectedPaths: [],
+      selectedFolderPath: null,
       chapters: [],
       isSaving: false,
     );
@@ -43,6 +44,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       current.copyWith(
         type: type,
         selectedPaths: [],
+        selectedFolderPath: null,
         chapters: [],
         totalDuration: null,
         totalPages: null,
@@ -110,7 +112,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (result == null || result.files.isEmpty) return;
 
     final paths = result.files.map((file) => file.path).whereType<String>().toList();
-    await _loadSelectedFiles(paths);
+    await _loadSelectedFiles(paths, selectedFolderPath: null);
   }
 
   Future<void> pickFolder() async {
@@ -122,14 +124,21 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final folderPath = await FilePicker.getDirectoryPath();
     if (folderPath == null) return;
 
-    final files = Directory(folderPath)
-        .listSync()
-        .whereType<File>()
-        .where((file) => FileTypeDetector.detectMaterialType(file.path) == current.type)
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
+    final files = <File>[];
+    await for (final entity in Directory(folderPath).list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      if (FileTypeDetector.detectMaterialType(entity.path) != current.type) continue;
+      files.add(entity);
+    }
+    files.sort((a, b) => a.path.compareTo(b.path));
 
-    await _loadSelectedFiles(files.map((file) => file.path).toList());
+    await _loadSelectedFiles(
+      files.map((file) => file.path).toList(growable: false),
+      selectedFolderPath: folderPath,
+      suggestedTitle: current.title.trim().isEmpty
+          ? path.basename(folderPath).filenameLabel()
+          : null,
+    );
   }
 
   Future<String?> save() async {
@@ -139,7 +148,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final materialId = _uuid.v4();
     state = AsyncData(current.copyWith(isSaving: true));
 
-    final copiedPaths = await _copyFiles(materialId, current.selectedPaths);
+    final copiedPaths = await _copyFiles(
+      materialId,
+      current.selectedPaths,
+      selectedFolderPath: current.selectedFolderPath,
+    );
     final repository = ref.read(materialRepositoryProvider);
     final firstFilePath = copiedPaths.isEmpty ? null : copiedPaths.first;
 
@@ -184,6 +197,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         author: '',
         source: '',
         selectedPaths: [],
+        selectedFolderPath: null,
         chapters: [],
         isSaving: false,
       ),
@@ -191,7 +205,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     return materialId;
   }
 
-  Future<void> _loadSelectedFiles(List<String> paths) async {
+  Future<void> _loadSelectedFiles(
+    List<String> paths, {
+    required String? selectedFolderPath,
+    String? suggestedTitle,
+  }) async {
     final current = state.valueOrNull;
     if (current == null) return;
 
@@ -215,7 +233,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           return Chapter(
             id: _uuid.v4(),
             materialId: 'pending',
-            title: path.basename(entry.value).filenameLabel(),
+            title: _mediaLabelForPath(
+              filePath: entry.value,
+              selectedFolderPath: selectedFolderPath,
+            ),
             orderIndex: entry.key,
             duration: seconds,
             filePath: entry.value,
@@ -226,7 +247,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
 
     state = AsyncData(
       current.copyWith(
+        title: suggestedTitle ?? current.title,
         selectedPaths: sortedPaths,
+        selectedFolderPath: selectedFolderPath,
         chapters: chapters,
         totalPages: totalPages,
         totalDuration: totalDuration,
@@ -234,7 +257,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     );
   }
 
-  Future<List<String>> _copyFiles(String materialId, List<String> sourcePaths) async {
+  Future<List<String>> _copyFiles(
+    String materialId,
+    List<String> sourcePaths, {
+    required String? selectedFolderPath,
+  }) async {
     if (sourcePaths.isEmpty) return const [];
     final docsDir = await getApplicationDocumentsDirectory();
     final materialDir = Directory(
@@ -244,8 +271,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
 
     final copied = <String>[];
     for (final sourcePath in sourcePaths) {
-      final name = path.basename(sourcePath);
-      final destination = path.join(materialDir.path, name);
+      final relativePath = selectedFolderPath == null
+          ? path.basename(sourcePath)
+          : path.relative(sourcePath, from: selectedFolderPath);
+      final destination = path.join(materialDir.path, relativePath);
+      await Directory(path.dirname(destination)).create(recursive: true);
       await File(sourcePath).copy(destination);
       copied.add(destination);
     }
@@ -267,5 +297,22 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final current = state.valueOrNull;
     if (current == null) return;
     state = AsyncData(update(current));
+  }
+
+  String _mediaLabelForPath({
+    required String filePath,
+    required String? selectedFolderPath,
+  }) {
+    if (selectedFolderPath == null) {
+      return path.basename(filePath).filenameLabel();
+    }
+
+    final relativePath = path.relative(filePath, from: selectedFolderPath);
+    final withoutExtension = relativePath.replaceAll(RegExp(r'\.[A-Za-z0-9]+$'), '');
+    return withoutExtension
+        .replaceAll('\\', ' / ')
+        .replaceAll('/', ' / ')
+        .replaceAll(RegExp(r'[_\-]+'), ' ')
+        .toTitleCase();
   }
 }

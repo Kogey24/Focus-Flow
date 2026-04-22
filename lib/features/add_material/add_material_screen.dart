@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path/path.dart' as path;
 
 import '../../core/constants/app_dimensions.dart';
 import '../../core/utils/chapter_tree.dart';
@@ -98,6 +99,21 @@ class AddMaterialScreen extends ConsumerWidget {
                     }
                   },
                 ),
+                if (addState.selectedFolderPath != null &&
+                    (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)) ...[
+                  const SizedBox(height: 16),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.folder_open_rounded),
+                      title: Text(path.basename(addState.selectedFolderPath!)),
+                      subtitle: Text(
+                        addState.selectedPaths.isEmpty
+                            ? 'Folder selected, but no supported ${addState.type.label.toLowerCase()} files were found yet.'
+                            : '${addState.selectedPaths.length} ${addState.type.label.toLowerCase()} files ready to import.',
+                      ),
+                    ),
+                  ),
+                ],
                 if (addState.type != study.MaterialType.course) ...[
                   const SizedBox(height: 20),
                   Row(
@@ -118,10 +134,18 @@ class AddMaterialScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 8),
                   if (addState.chapters.isEmpty)
-                    const EmptyStateWidget(
-                      title: 'No structure yet',
-                      message: 'Upload a file or add manual chapters to shape the material.',
-                      icon: Icons.list_alt_rounded,
+                    EmptyStateWidget(
+                      title: addState.selectedFolderPath != null &&
+                              (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)
+                          ? 'No supported files found'
+                          : 'No structure yet',
+                      message: addState.selectedFolderPath != null &&
+                              (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)
+                          ? 'The selected folder does not contain supported ${addState.type.label.toLowerCase()} files.'
+                          : 'Upload a file or add manual chapters to shape the material.',
+                      icon: addState.selectedFolderPath != null
+                          ? Icons.folder_off_rounded
+                          : Icons.list_alt_rounded,
                     )
                   else if (addState.type == study.MaterialType.book)
                     Theme(
