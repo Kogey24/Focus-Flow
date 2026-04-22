@@ -115,6 +115,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (result == null || result.files.isEmpty) return;
 
     final paths = result.files.map((file) => file.path).whereType<String>().toList();
+    _debugLogBlock([
+      '[AddMaterial][files] Selected ${paths.length} ${current.type.label.toLowerCase()} file(s).',
+      for (var i = 0; i < paths.length; i++) '[AddMaterial][files] file[$i]=${paths[i]}',
+    ]);
     await _loadSelectedFiles(
       paths,
       selectedFolderPath: null,
@@ -127,6 +131,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (current == null || current.type == MaterialType.book || current.type == MaterialType.course) {
       return;
     }
+
+    _debugLog(
+      '[AddMaterial][folder] Opening folder picker for ${current.type.label.toLowerCase()} uploads.',
+    );
 
     if (Platform.isAndroid) {
       final selection = await _pickAndroidMediaFolder(current.type);
@@ -189,10 +197,19 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       tags: current.source.trim().isEmpty ? const [] : [current.source.trim()],
     );
 
+    _logSavePayload(
+      material: material,
+      chapters: updatedChapters,
+      selectedFolderPath: current.selectedFolderPath,
+      copiedPaths: copiedPaths,
+    );
+
     await repository.saveMaterial(
       material: material,
       chapters: updatedChapters,
     );
+
+    _debugLog('[AddMaterial][save] Material saved successfully with id=$materialId.');
 
     state = const AsyncData(
       AddMaterialState(
@@ -224,6 +241,13 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     int? totalPages;
     int? totalDuration;
 
+    _debugLogBlock([
+      '[AddMaterial][load] Received ${sortedPaths.length} path(s) for ${current.type.label.toLowerCase()}.',
+      '[AddMaterial][load] selectedFolderPath=${selectedFolderPath ?? '(none)'}',
+      '[AddMaterial][load] ignoredFilesCount=${folderIgnoredFilesCount ?? 0}',
+      for (var i = 0; i < sortedPaths.length; i++) '[AddMaterial][load] input[$i]=${sortedPaths[i]}',
+    ]);
+
     if (current.type == MaterialType.book && sortedPaths.isNotEmpty) {
       final parse = await _parser.parse(
         materialId: 'pending',
@@ -231,6 +255,15 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       );
       chapters = parse.chapters;
       totalPages = parse.totalPages;
+      _logPreparedStructure(
+        stage: 'parsed book structure',
+        type: current.type,
+        chapters: chapters,
+        selectedFolderPath: selectedFolderPath,
+        ignoredFilesCount: folderIgnoredFilesCount,
+        totalPages: totalPages,
+        totalDuration: totalDuration,
+      );
     } else {
       chapters = sortedPaths.asMap().entries.map((entry) {
         return Chapter(
@@ -257,10 +290,23 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         ),
       );
 
+      _logPreparedStructure(
+        stage: 'generated media items',
+        type: current.type,
+        chapters: chapters,
+        selectedFolderPath: selectedFolderPath,
+        ignoredFilesCount: folderIgnoredFilesCount,
+        totalPages: null,
+        totalDuration: null,
+      );
+
       final chaptersWithDurations = await Future.wait(
         chapters.map((chapter) async {
           final seconds = await _probeDuration(chapter.filePath ?? '');
           totalDuration = (totalDuration ?? 0) + (seconds ?? 0);
+          _debugLog(
+            '[AddMaterial][duration] "${chapter.title}" => ${seconds == null ? 'duration unavailable' : '$seconds seconds'}',
+          );
           return chapter.copyWith(duration: seconds);
         }),
       );
@@ -274,6 +320,15 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           chapters: chaptersWithDurations,
           totalDuration: totalDuration,
         ),
+      );
+      _logPreparedStructure(
+        stage: 'media durations resolved',
+        type: current.type,
+        chapters: chaptersWithDurations,
+        selectedFolderPath: selectedFolderPath,
+        ignoredFilesCount: folderIgnoredFilesCount,
+        totalPages: null,
+        totalDuration: totalDuration,
       );
       return;
     }
@@ -380,6 +435,14 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       final ignoredFilesCount = (result['ignoredFilesCount'] as num?)?.toInt() ?? 0;
       if (rootPath == null || folderName == null) return null;
 
+      _logFolderSelection(
+        source: 'android-channel',
+        type: type,
+        folderPath: rootPath,
+        files: files,
+        ignoredFilesCount: ignoredFilesCount,
+      );
+
       return _PickedMediaFolder(
         rootPath: rootPath,
         folderName: folderName,
@@ -416,6 +479,14 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       files.add(entity);
     }
     files.sort((a, b) => a.path.compareTo(b.path));
+
+    _logFolderSelection(
+      source: 'filesystem',
+      type: current.type,
+      folderPath: folderPath,
+      files: files.map((file) => file.path).toList(growable: false),
+      ignoredFilesCount: ignoredFilesCount,
+    );
 
     await _loadSelectedFiles(
       files.map((file) => file.path).toList(growable: false),
@@ -683,6 +754,161 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final rounded = value.round();
     if (rounded <= 2) return 2;
     return rounded.isEven ? rounded : rounded - 1;
+  }
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    debugPrint(message);
+  }
+
+  void _debugLogBlock(Iterable<String> lines) {
+    if (!kDebugMode) return;
+    for (final line in lines) {
+      debugPrint(line);
+    }
+  }
+
+  void _logFolderSelection({
+    required String source,
+    required MaterialType type,
+    required String folderPath,
+    required List<String> files,
+    required int ignoredFilesCount,
+  }) {
+    final lowerType = type.label.toLowerCase();
+    _debugLogBlock([
+      '[AddMaterial][folder][$source] folderPath=$folderPath',
+      '[AddMaterial][folder][$source] supported${lowerType}Files=${files.length}',
+      '[AddMaterial][folder][$source] ignoredFiles=$ignoredFilesCount',
+      if (files.isEmpty)
+        '[AddMaterial][folder][$source] Remark: no supported $lowerType files were found in the selected folder.',
+      for (var i = 0; i < files.length; i++) '[AddMaterial][folder][$source] file[$i]=${files[i]}',
+    ]);
+  }
+
+  void _logPreparedStructure({
+    required String stage,
+    required MaterialType type,
+    required List<Chapter> chapters,
+    required String? selectedFolderPath,
+    required int? ignoredFilesCount,
+    required int? totalPages,
+    required int? totalDuration,
+  }) {
+    final itemLabel = _debugItemLabel(type);
+    _debugLogBlock([
+      '[AddMaterial][structure] stage=$stage',
+      '[AddMaterial][structure] type=${type.label}',
+      '[AddMaterial][structure] selectedFolderPath=${selectedFolderPath ?? '(none)'}',
+      '[AddMaterial][structure] ignoredFilesCount=${ignoredFilesCount ?? 0}',
+      '[AddMaterial][structure] ${itemLabel}Count=${chapters.length}',
+      if (totalPages != null) '[AddMaterial][structure] totalPages=$totalPages',
+      if (totalDuration != null) '[AddMaterial][structure] totalDurationSeconds=$totalDuration',
+      if (chapters.isEmpty)
+        '[AddMaterial][structure] Remark: no $itemLabel entries were generated from the current selection.',
+    ]);
+
+    for (var i = 0; i < chapters.length; i++) {
+      final chapter = chapters[i];
+      final validation = _validateChapterForDebug(chapter: chapter, type: type);
+      _debugLog(
+        '[AddMaterial][structure][${validation.isValid ? 'VALID' : 'WARN'}] '
+        '$itemLabel[$i] title="${chapter.title}" orderIndex=${chapter.orderIndex} '
+        'parentId=${chapter.parentId ?? '(root)'} pageStart=${chapter.pageStart ?? '-'} '
+        'pageEnd=${chapter.pageEnd ?? '-'} duration=${chapter.duration ?? '-'} '
+        'filePath=${chapter.filePath ?? '-'} remark=${validation.remark}',
+      );
+    }
+  }
+
+  ({bool isValid, String remark}) _validateChapterForDebug({
+    required Chapter chapter,
+    required MaterialType type,
+  }) {
+    final issues = <String>[];
+
+    if (chapter.title.trim().isEmpty) {
+      issues.add('title is empty');
+    }
+    if (chapter.orderIndex < 0) {
+      issues.add('order index is negative');
+    }
+    if (type != MaterialType.book && (chapter.filePath == null || chapter.filePath!.trim().isEmpty)) {
+      issues.add('media file path is missing');
+    }
+    if (type == MaterialType.book &&
+        chapter.pageStart != null &&
+        chapter.pageEnd != null &&
+        chapter.pageEnd! < chapter.pageStart!) {
+      issues.add('pageEnd is before pageStart');
+    }
+
+    if (issues.isNotEmpty) {
+      return (
+        isValid: false,
+        remark: issues.join('; '),
+      );
+    }
+
+    final remark = switch (type) {
+      MaterialType.book when chapter.pageStart != null =>
+        'valid chapter: title and order index are set, and page metadata is available',
+      MaterialType.book =>
+        'valid chapter: title and order index are set; page metadata is optional',
+      _ when chapter.duration != null =>
+        'valid media item: title, order index, file path, and duration are available',
+      _ =>
+        'valid media item: title, order index, and file path are available; duration can remain empty until probing succeeds',
+    };
+
+    return (
+      isValid: true,
+      remark: remark,
+    );
+  }
+
+  void _logSavePayload({
+    required StudyMaterial material,
+    required List<Chapter> chapters,
+    required String? selectedFolderPath,
+    required List<String> copiedPaths,
+  }) {
+    _debugLogBlock([
+      '[AddMaterial][save] Preparing to save material.',
+      '[AddMaterial][save] id=${material.id}',
+      '[AddMaterial][save] type=${material.type.label}',
+      '[AddMaterial][save] title="${material.title}"',
+      '[AddMaterial][save] author=${material.author ?? '(none)'}',
+      '[AddMaterial][save] selectedFolderPath=${selectedFolderPath ?? '(none)'}',
+      '[AddMaterial][save] filePath=${material.filePath ?? '(none)'}',
+      '[AddMaterial][save] totalPages=${material.totalPages ?? '-'}',
+      '[AddMaterial][save] totalDurationSeconds=${material.totalDuration ?? '-'}',
+      '[AddMaterial][save] chaptersCount=${chapters.length}',
+      '[AddMaterial][save] copiedFilesCount=${copiedPaths.length}',
+      for (var i = 0; i < copiedPaths.length; i++) '[AddMaterial][save] copied[$i]=${copiedPaths[i]}',
+    ]);
+
+    for (var i = 0; i < chapters.length; i++) {
+      final validation = _validateChapterForDebug(
+        chapter: chapters[i],
+        type: material.type,
+      );
+      _debugLog(
+        '[AddMaterial][save][${validation.isValid ? 'VALID' : 'WARN'}] '
+        '${_debugItemLabel(material.type)}[$i] id=${chapters[i].id} '
+        'title="${chapters[i].title}" filePath=${chapters[i].filePath ?? '-'} '
+        'remark=${validation.remark}',
+      );
+    }
+  }
+
+  String _debugItemLabel(MaterialType type) {
+    return switch (type) {
+      MaterialType.book => 'chapter',
+      MaterialType.video => 'episode',
+      MaterialType.audio => 'track',
+      MaterialType.course => 'item',
+    };
   }
 }
 
