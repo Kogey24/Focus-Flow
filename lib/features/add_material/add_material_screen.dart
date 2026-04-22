@@ -12,6 +12,7 @@ import '../../domain/models/chapter.dart';
 import '../home/home_notifier.dart';
 import '../library/library_notifier.dart';
 import 'add_material_notifier.dart';
+import 'add_material_state.dart';
 
 class AddMaterialScreen extends ConsumerWidget {
   const AddMaterialScreen({super.key});
@@ -106,11 +107,7 @@ class AddMaterialScreen extends ConsumerWidget {
                     child: ListTile(
                       leading: const Icon(Icons.folder_open_rounded),
                       title: Text(path.basename(addState.selectedFolderPath!)),
-                      subtitle: Text(
-                        addState.selectedPaths.isEmpty
-                            ? 'Folder selected, but no supported ${addState.type.label.toLowerCase()} files were found yet.'
-                            : '${addState.selectedPaths.length} ${addState.type.label.toLowerCase()} files ready to import.',
-                      ),
+                      subtitle: Text(_folderSummaryMessage(addState)),
                     ),
                   ),
                 ],
@@ -141,7 +138,7 @@ class AddMaterialScreen extends ConsumerWidget {
                           : 'No structure yet',
                       message: addState.selectedFolderPath != null &&
                               (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)
-                          ? 'The selected folder does not contain supported ${addState.type.label.toLowerCase()} files.'
+                          ? _emptyFolderMessage(addState)
                           : 'Upload a file or add manual chapters to shape the material.',
                       icon: addState.selectedFolderPath != null
                           ? Icons.folder_off_rounded
@@ -227,6 +224,35 @@ class AddMaterialScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  String _folderSummaryMessage(AddMaterialState addState) {
+    final materialLabel = addState.type.label.toLowerCase();
+    final supportedCount = addState.selectedPaths.length;
+    final ignoredCount = addState.folderIgnoredFilesCount ?? 0;
+    final supportedLabel = supportedCount == 1 ? '$materialLabel file' : '$materialLabel files';
+    final ignoredLabel = ignoredCount == 1 ? '1 unsupported file' : '$ignoredCount unsupported files';
+
+    if (supportedCount == 0 && ignoredCount == 0) {
+      return 'No files were found in the selected folder.';
+    }
+    if (supportedCount == 0) {
+      return 'Found no supported $materialLabel files and ignored $ignoredLabel.';
+    }
+    if (ignoredCount == 0) {
+      return 'Found $supportedCount supported $supportedLabel ready to import.';
+    }
+    return 'Found $supportedCount supported $supportedLabel ready to import and ignored $ignoredLabel.';
+  }
+
+  String _emptyFolderMessage(AddMaterialState addState) {
+    final materialLabel = addState.type.label.toLowerCase();
+    final ignoredCount = addState.folderIgnoredFilesCount ?? 0;
+    if (ignoredCount == 0) {
+      return 'The selected folder does not contain any files.';
+    }
+    final ignoredLabel = ignoredCount == 1 ? '1 unsupported file' : '$ignoredCount unsupported files';
+    return 'The selected folder does not contain supported $materialLabel files. It ignored $ignoredLabel.';
   }
 }
 

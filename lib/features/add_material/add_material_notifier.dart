@@ -2,13 +2,14 @@ import 'dart:io';
 
 import 'package:ffmpeg_kit_audio_flutter/ffprobe_kit.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/extensions/string_extensions.dart';
-import '../../core/utils/file_type_detector.dart';
 import '../../core/utils/pdf_toc_parser.dart';
 import '../../data/repositories/material_repository.dart';
 import '../../domain/enums/material_type.dart';
@@ -20,6 +21,7 @@ part 'add_material_notifier.g.dart';
 
 @riverpod
 class AddMaterialNotifier extends _$AddMaterialNotifier {
+  static const MethodChannel _mediaFolderChannel = MethodChannel('focus_flow/media_folder');
   final Uuid _uuid = const Uuid();
   final PdfTocParser _parser = PdfTocParser();
 
@@ -32,6 +34,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       source: '',
       selectedPaths: [],
       selectedFolderPath: null,
+      folderIgnoredFilesCount: null,
       chapters: [],
       isSaving: false,
     );
@@ -45,6 +48,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         type: type,
         selectedPaths: [],
         selectedFolderPath: null,
+        folderIgnoredFilesCount: null,
         chapters: [],
         totalDuration: null,
         totalPages: null,
@@ -95,12 +99,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final current = state.valueOrNull;
     if (current == null) return;
 
-    final extensions = switch (current.type) {
-      MaterialType.book => ['pdf', 'docx'],
-      MaterialType.video => ['mp4', 'mkv', 'mov', 'avi', 'webm'],
-      MaterialType.audio => ['mp3', 'aac', 'wav', 'm4a', 'flac'],
-      MaterialType.course => <String>[],
-    };
+    final extensions = _allowedExtensionsFor(current.type);
 
     if (current.type == MaterialType.course) return;
 
@@ -112,7 +111,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (result == null || result.files.isEmpty) return;
 
     final paths = result.files.map((file) => file.path).whereType<String>().toList();
-    await _loadSelectedFiles(paths, selectedFolderPath: null);
+    await _loadSelectedFiles(
+      paths,
+      selectedFolderPath: null,
+      folderIgnoredFilesCount: null,
+    );
   }
 
   Future<void> pickFolder() async {
@@ -121,24 +124,20 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       return;
     }
 
-    final folderPath = await FilePicker.getDirectoryPath();
-    if (folderPath == null) return;
-
-    final files = <File>[];
-    await for (final entity in Directory(folderPath).list(recursive: true, followLinks: false)) {
-      if (entity is! File) continue;
-      if (FileTypeDetector.detectMaterialType(entity.path) != current.type) continue;
-      files.add(entity);
+    if (Platform.isAndroid) {
+      final selection = await _pickAndroidMediaFolder(current.type);
+      if (selection != null) {
+        await _loadSelectedFiles(
+          selection.files,
+          selectedFolderPath: selection.rootPath,
+          folderIgnoredFilesCount: selection.ignoredFilesCount,
+          suggestedTitle: current.title.trim().isEmpty ? selection.folderName.filenameLabel() : null,
+        );
+        return;
+      }
     }
-    files.sort((a, b) => a.path.compareTo(b.path));
 
-    await _loadSelectedFiles(
-      files.map((file) => file.path).toList(growable: false),
-      selectedFolderPath: folderPath,
-      suggestedTitle: current.title.trim().isEmpty
-          ? path.basename(folderPath).filenameLabel()
-          : null,
-    );
+    await _pickFolderFromFileSystem(current);
   }
 
   Future<String?> save() async {
@@ -198,6 +197,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         source: '',
         selectedPaths: [],
         selectedFolderPath: null,
+        folderIgnoredFilesCount: null,
         chapters: [],
         isSaving: false,
       ),
@@ -208,6 +208,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   Future<void> _loadSelectedFiles(
     List<String> paths, {
     required String? selectedFolderPath,
+    required int? folderIgnoredFilesCount,
     String? suggestedTitle,
   }) async {
     final current = state.valueOrNull;
@@ -226,23 +227,50 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       chapters = parse.chapters;
       totalPages = parse.totalPages;
     } else {
-      chapters = await Future.wait(
-        sortedPaths.asMap().entries.map((entry) async {
-          final seconds = await _probeDuration(entry.value);
-          totalDuration = (totalDuration ?? 0) + (seconds ?? 0);
-          return Chapter(
-            id: _uuid.v4(),
-            materialId: 'pending',
-            title: _mediaLabelForPath(
-              filePath: entry.value,
-              selectedFolderPath: selectedFolderPath,
-            ),
-            orderIndex: entry.key,
-            duration: seconds,
+      chapters = sortedPaths.asMap().entries.map((entry) {
+        return Chapter(
+          id: _uuid.v4(),
+          materialId: 'pending',
+          title: _mediaLabelForPath(
             filePath: entry.value,
-          );
+            selectedFolderPath: selectedFolderPath,
+          ),
+          orderIndex: entry.key,
+          filePath: entry.value,
+        );
+      }).toList(growable: false);
+
+      state = AsyncData(
+        current.copyWith(
+          title: suggestedTitle ?? current.title,
+          selectedPaths: sortedPaths,
+          selectedFolderPath: selectedFolderPath,
+          folderIgnoredFilesCount: folderIgnoredFilesCount,
+          chapters: chapters,
+          totalPages: null,
+          totalDuration: null,
+        ),
+      );
+
+      final chaptersWithDurations = await Future.wait(
+        chapters.map((chapter) async {
+          final seconds = await _probeDuration(chapter.filePath ?? '');
+          totalDuration = (totalDuration ?? 0) + (seconds ?? 0);
+          return chapter.copyWith(duration: seconds);
         }),
       );
+
+      final latest = state.valueOrNull;
+      if (latest == null || !listEquals(latest.selectedPaths, sortedPaths)) {
+        return;
+      }
+      state = AsyncData(
+        latest.copyWith(
+          chapters: chaptersWithDurations,
+          totalDuration: totalDuration,
+        ),
+      );
+      return;
     }
 
     state = AsyncData(
@@ -250,6 +278,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         title: suggestedTitle ?? current.title,
         selectedPaths: sortedPaths,
         selectedFolderPath: selectedFolderPath,
+        folderIgnoredFilesCount: folderIgnoredFilesCount,
         chapters: chapters,
         totalPages: totalPages,
         totalDuration: totalDuration,
@@ -315,4 +344,128 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         .replaceAll(RegExp(r'[_\-]+'), ' ')
         .toTitleCase();
   }
+
+  Future<_PickedMediaFolder?> _pickAndroidMediaFolder(MaterialType type) async {
+    final allowedExtensions = _allowedExtensionsFor(type);
+
+    if (allowedExtensions.isEmpty) return null;
+
+    try {
+      final result = await _mediaFolderChannel.invokeMapMethod<String, Object?>(
+        'pickMediaFolder',
+        {
+          'allowedExtensions': allowedExtensions,
+          'mediaType': switch (type) {
+            MaterialType.video => 'video',
+            MaterialType.audio => 'audio',
+            _ => '',
+          },
+        },
+      );
+      if (result == null) return null;
+
+      final rootPath = result['rootPath'] as String?;
+      final folderName = result['folderName'] as String?;
+      final files = (result['files'] as List<Object?>?)?.whereType<String>().toList(growable: false) ?? const [];
+      final ignoredFilesCount = (result['ignoredFilesCount'] as num?)?.toInt() ?? 0;
+      if (rootPath == null || folderName == null) return null;
+
+      return _PickedMediaFolder(
+        rootPath: rootPath,
+        folderName: folderName,
+        files: files,
+        ignoredFilesCount: ignoredFilesCount,
+      );
+    } on MissingPluginException catch (error) {
+      debugPrint('Media folder channel unavailable, falling back to filesystem scan: $error');
+      return null;
+    } on PlatformException catch (error) {
+      debugPrint('Media folder channel failed, falling back to filesystem scan: ${error.message}');
+      return null;
+    }
+  }
+
+  Future<void> _pickFolderFromFileSystem(AddMaterialState current) async {
+    final folderPath = await FilePicker.getDirectoryPath();
+    if (folderPath == null) return;
+
+    final allowedExtensions = _allowedExtensionsFor(current.type).toSet();
+    final files = <File>[];
+    var ignoredFilesCount = 0;
+    await for (final entity in Directory(folderPath).list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final isSupported = await _matchesMaterialType(
+        filePath: entity.path,
+        type: current.type,
+        allowedExtensions: allowedExtensions,
+      );
+      if (!isSupported) {
+        ignoredFilesCount++;
+        continue;
+      }
+      files.add(entity);
+    }
+    files.sort((a, b) => a.path.compareTo(b.path));
+
+    await _loadSelectedFiles(
+      files.map((file) => file.path).toList(growable: false),
+      selectedFolderPath: folderPath,
+      folderIgnoredFilesCount: ignoredFilesCount,
+      suggestedTitle: current.title.trim().isEmpty
+          ? path.basename(folderPath).filenameLabel()
+          : null,
+    );
+  }
+
+  List<String> _allowedExtensionsFor(MaterialType type) {
+    return switch (type) {
+      MaterialType.book => ['pdf', 'docx'],
+      MaterialType.video => ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', '3gp', 'mpeg', 'mpg', 'ts'],
+      MaterialType.audio => ['mp3', 'aac', 'wav', 'm4a', 'flac', 'ogg', 'opus', 'wma'],
+      MaterialType.course => const <String>[],
+    };
+  }
+
+  Future<bool> _matchesMaterialType({
+    required String filePath,
+    required MaterialType type,
+    required Set<String> allowedExtensions,
+  }) async {
+    final extension = path.extension(filePath).replaceFirst('.', '').toLowerCase();
+    if (allowedExtensions.contains(extension)) {
+      return true;
+    }
+
+    try {
+      final session = await FFprobeKit.getMediaInformation(filePath);
+      final info = await session.getMediaInformation();
+      final streamTypes = info
+              ?.getStreams()
+              .map((stream) => stream.getType()?.toLowerCase())
+              .whereType<String>()
+              .toSet() ??
+          const <String>{};
+      return switch (type) {
+        MaterialType.video => streamTypes.contains('video'),
+        MaterialType.audio => streamTypes.contains('audio') && !streamTypes.contains('video'),
+        _ => false,
+      };
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+class _PickedMediaFolder {
+  const _PickedMediaFolder({
+    required this.rootPath,
+    required this.folderName,
+    required this.files,
+    required this.ignoredFilesCount,
+  });
+
+  final String rootPath;
+  final String folderName;
+  final List<String> files;
+  final int ignoredFilesCount;
 }

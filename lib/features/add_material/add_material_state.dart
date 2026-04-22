@@ -11,6 +11,7 @@ class AddMaterialState {
     required this.source,
     required this.selectedPaths,
     this.selectedFolderPath,
+    this.folderIgnoredFilesCount,
     required this.chapters,
     required this.isSaving,
     this.totalPages,
@@ -23,6 +24,7 @@ class AddMaterialState {
   final String source;
   final List<String> selectedPaths;
   final String? selectedFolderPath;
+  final int? folderIgnoredFilesCount;
   final List<Chapter> chapters;
   final bool isSaving;
   final int? totalPages;
@@ -35,6 +37,7 @@ class AddMaterialState {
     String? source,
     List<String>? selectedPaths,
     Object? selectedFolderPath = _unset,
+    Object? folderIgnoredFilesCount = _unset,
     List<Chapter>? chapters,
     bool? isSaving,
     Object? totalPages = _unset,
@@ -47,6 +50,9 @@ class AddMaterialState {
       source: source ?? this.source,
       selectedPaths: selectedPaths ?? this.selectedPaths,
       selectedFolderPath: selectedFolderPath == _unset ? this.selectedFolderPath : selectedFolderPath as String?,
+      folderIgnoredFilesCount: folderIgnoredFilesCount == _unset
+          ? this.folderIgnoredFilesCount
+          : folderIgnoredFilesCount as int?,
       chapters: chapters ?? this.chapters,
       isSaving: isSaving ?? this.isSaving,
       totalPages: totalPages == _unset ? this.totalPages : totalPages as int?,
