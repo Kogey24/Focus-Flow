@@ -50,17 +50,12 @@ object PdfTableOfContentsExtractor {
             val searchStartPage = tocPages.last().pageIndex + 1
             if (searchStartPage > document.numberOfPages) return emptyList()
 
-            val searchPages = (searchStartPage..document.numberOfPages)
-                .map { pageIndex ->
-                    val lines = stripper.extract(document, pageIndex)
-                    PageSearchText(
-                        pageIndex = pageIndex,
-                        topText = normalize(lines.take(18).joinToString(" ") { it.text }),
-                        fullText = normalize(lines.joinToString(" ") { it.text })
-                    )
-                }
-
-            val resolvedEntries = resolvePageStarts(rawEntries, searchPages).toMutableList()
+            val resolvedEntries = resolvePageStarts(
+                entries = rawEntries,
+                document = document,
+                stripper = stripper,
+                searchStartPage = searchStartPage
+            ).toMutableList()
             fillParentPageStarts(resolvedEntries)
 
             return resolvedEntries
@@ -160,31 +155,39 @@ object PdfTableOfContentsExtractor {
 
     private fun resolvePageStarts(
         entries: List<ParsedTocEntry>,
-        pages: List<PageSearchText>
+        document: PDDocument,
+        stripper: PositionedPageStripper,
+        searchStartPage: Int
     ): List<ResolvedTocEntry> {
-        val resolved = mutableListOf<ResolvedTocEntry>()
-        var searchStartIndex = 0
-
-        for (entry in entries) {
-            val terms = buildSearchTerms(entry.title)
-            var matchedPage: Int? = null
-
-            for (pageIndex in searchStartIndex until pages.size) {
-                val page = pages[pageIndex]
-                if (terms.any { term -> page.topText.contains(term) || page.fullText.contains(term) }) {
-                    matchedPage = page.pageIndex
-                    searchStartIndex = pageIndex
-                    break
-                }
-            }
-
-            resolved.add(
+        val resolved = entries
+            .map { entry ->
                 ResolvedTocEntry(
                     title = entry.title,
                     level = entry.level,
-                    pageStart = matchedPage
+                    pageStart = null
                 )
-            )
+            }
+            .toMutableList()
+        val termsByEntry = entries.map { buildSearchTerms(it.title) }
+        var entryIndex = 0
+
+        for (pageIndex in searchStartPage..document.numberOfPages) {
+            if (entryIndex >= entries.size) break
+
+            val lines = stripper.extract(document, pageIndex)
+            if (lines.isEmpty()) continue
+
+            val topText = normalize(lines.take(18).joinToString(" ") { it.text })
+            val fullText = normalize(lines.joinToString(" ") { it.text })
+
+            while (entryIndex < entries.size) {
+                val terms = termsByEntry[entryIndex]
+                val matches = terms.any { term -> topText.contains(term) || fullText.contains(term) }
+                if (!matches) break
+
+                resolved[entryIndex].pageStart = pageIndex
+                entryIndex++
+            }
         }
 
         return resolved
@@ -301,12 +304,6 @@ private data class ExtractedLine(
 private data class ExtractedPage(
     val pageIndex: Int,
     val lines: List<ExtractedLine>
-)
-
-private data class PageSearchText(
-    val pageIndex: Int,
-    val topText: String,
-    val fullText: String
 )
 
 private data class ParsedTocEntry(
