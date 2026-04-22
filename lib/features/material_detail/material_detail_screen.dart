@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/widgets/confirmation_dialog.dart';
 import '../../core/widgets/empty_state_widget.dart';
 import '../../domain/enums/material_type.dart' as study;
 import 'audio_detail_screen.dart';
@@ -20,6 +21,7 @@ class MaterialDetailScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(materialDetailNotifierProvider(materialId));
+    final detail = state.valueOrNull;
 
     return Scaffold(
       appBar: AppBar(
@@ -33,6 +35,36 @@ class MaterialDetailScreen extends ConsumerWidget {
           },
           icon: const Icon(Icons.arrow_back_rounded),
         ),
+        actions: [
+          if (detail != null)
+            IconButton(
+              tooltip: 'Delete material',
+              onPressed: () async {
+                final confirmed = await ConfirmationDialog.show(
+                  context,
+                  title: 'Delete ${detail.material.title}?',
+                  message: 'This removes the material, its chapters, notes, sessions, and local copied files from this device.',
+                  confirmLabel: 'Delete',
+                );
+                if (!confirmed) return;
+
+                try {
+                  await ref.read(materialDetailNotifierProvider(materialId).notifier).deleteMaterial();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${detail.material.title} deleted.')),
+                  );
+                  context.go('/library');
+                } catch (error) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Could not delete material: $error')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.delete_outline_rounded),
+            ),
+        ],
       ),
       body: state.when(
         data: (detail) {

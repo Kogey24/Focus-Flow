@@ -1,6 +1,9 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../data/repositories/material_repository.dart';
+import '../home/home_notifier.dart';
+import '../library/library_notifier.dart';
+import '../stats/stats_notifier.dart';
 import 'material_detail_state.dart';
 
 part 'material_detail_notifier.g.dart';
@@ -46,5 +49,15 @@ class MaterialDetailNotifier extends _$MaterialDetailNotifier {
         );
     ref.invalidateSelf();
     state = await AsyncValue.guard(() => build(current.material.id));
+  }
+
+  Future<void> deleteMaterial() async {
+    final current = state.valueOrNull;
+    if (current == null) return;
+    await ref.read(materialRepositoryProvider).deleteMaterial(current.material.id);
+    ref.invalidate(homeNotifierProvider);
+    ref.invalidate(libraryNotifierProvider);
+    ref.invalidate(statsNotifierProvider);
+    ref.invalidateSelf();
   }
 }

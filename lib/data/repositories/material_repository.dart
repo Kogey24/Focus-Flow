@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:uuid/uuid.dart';
 
@@ -113,6 +117,24 @@ class MaterialRepository {
         });
       }
     });
+  }
+
+  Future<void> deleteMaterial(String materialId) async {
+    final chapterRows = await _getChapterRows(materialId);
+    final chapterIds = chapterRows.map((row) => row.id).toList(growable: false);
+
+    await _db.transaction(() async {
+      if (chapterIds.isNotEmpty) {
+        await (_db.delete(_db.chapterNotesTable)..where((tbl) => tbl.chapterId.isIn(chapterIds))).go();
+      }
+      await (_db.delete(_db.progressSnapshotsTable)..where((tbl) => tbl.materialId.equals(materialId))).go();
+      await (_db.delete(_db.focusSessionsTable)..where((tbl) => tbl.materialId.equals(materialId))).go();
+      await (_db.delete(_db.chaptersTable)..where((tbl) => tbl.materialId.equals(materialId))).go();
+      await (_db.delete(_db.materialsTable)..where((tbl) => tbl.id.equals(materialId))).go();
+      await _rebuildStreaks();
+    });
+
+    await _deleteMaterialFiles(materialId);
   }
 
   Future<void> toggleChapterCompletion({
@@ -295,6 +317,60 @@ class MaterialRepository {
         status: Value(status),
       ),
     );
+  }
+
+  Future<void> _rebuildStreaks() async {
+    await _db.delete(_db.streaksTable).go();
+
+    final completedSessions = await (_db.select(_db.focusSessionsTable)
+          ..where((tbl) => tbl.status.equals('completed'))
+          ..orderBy([(tbl) => OrderingTerm.asc(tbl.startedAt)]))
+        .get();
+
+    if (completedSessions.isEmpty) return;
+
+    final totalsByDate = <String, ({int focusSeconds, int sessionCount})>{};
+    for (final session in completedSessions) {
+      final startedAt = DateTime.fromMillisecondsSinceEpoch(session.startedAt);
+      final dateKey = _formatDate(startedAt);
+      final current = totalsByDate[dateKey];
+      totalsByDate[dateKey] = (
+        focusSeconds: (current?.focusSeconds ?? 0) + session.durationSeconds,
+        sessionCount: (current?.sessionCount ?? 0) + 1,
+      );
+    }
+
+    for (final entry in totalsByDate.entries) {
+      await _db.into(_db.streaksTable).insert(
+            StreaksTableCompanion.insert(
+              id: _uuid.v4(),
+              date: entry.key,
+              totalFocusSeconds: Value(entry.value.focusSeconds),
+              sessionCount: Value(entry.value.sessionCount),
+            ),
+          );
+    }
+  }
+
+  Future<void> _deleteMaterialFiles(String materialId) async {
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final materialDir = Directory(
+        path.join(docsDir.path, 'focusflow', 'materials', materialId),
+      );
+      if (await materialDir.exists()) {
+        await materialDir.delete(recursive: true);
+      }
+    } catch (_) {
+      // Best effort cleanup. Database deletion should still succeed even if file cleanup fails.
+    }
+  }
+
+  String _formatDate(DateTime date) {
+    final year = date.year.toString().padLeft(4, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '$year-$month-$day';
   }
 }
 

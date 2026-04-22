@@ -32,33 +32,37 @@ class PdfTocParser {
     required String materialId,
     required String filePath,
   }) async {
+    final totalPages = await _readTotalPages(filePath);
+    final tableOfContentsChapters = await _buildTableOfContentsChapters(
+      materialId: materialId,
+      filePath: filePath,
+      totalPages: totalPages,
+    );
+
+    if (tableOfContentsChapters.isNotEmpty) {
+      return TocParseResult(
+        chapters: tableOfContentsChapters,
+        confidence: TocParseConfidence.high,
+        totalPages: totalPages,
+      );
+    }
+
+    final inferred = _buildFallbackChapters(
+      materialId: materialId,
+      filePath: filePath,
+      totalPages: totalPages,
+    );
+    return TocParseResult(
+      chapters: inferred,
+      confidence: TocParseConfidence.low,
+      totalPages: totalPages,
+    );
+  }
+
+  Future<int> _readTotalPages(String filePath) async {
     final document = await PdfDocument.openFile(filePath);
     try {
-      final totalPages = document.pagesCount;
-      final tableOfContentsChapters = await _buildTableOfContentsChapters(
-        materialId: materialId,
-        filePath: filePath,
-        totalPages: totalPages,
-      );
-
-      if (tableOfContentsChapters.isNotEmpty) {
-        return TocParseResult(
-          chapters: tableOfContentsChapters,
-          confidence: TocParseConfidence.high,
-          totalPages: totalPages,
-        );
-      }
-
-      final inferred = _buildFallbackChapters(
-        materialId: materialId,
-        filePath: filePath,
-        totalPages: totalPages,
-      );
-      return TocParseResult(
-        chapters: inferred,
-        confidence: TocParseConfidence.low,
-        totalPages: totalPages,
-      );
+      return document.pagesCount;
     } finally {
       await document.close();
     }
