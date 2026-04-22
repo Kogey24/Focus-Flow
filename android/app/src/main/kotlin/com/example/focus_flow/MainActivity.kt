@@ -1,6 +1,8 @@
 package com.example.focus_flow
 
-import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -10,41 +12,15 @@ import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val REQUEST_MEDIA_FOLDER = 40021
+    }
+
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingMediaFolderResult: MethodChannel.Result? = null
     private var pendingMediaExtensions: Set<String> = emptySet()
     private var pendingMediaType: String = ""
-    private val mediaFolderPicker =
-        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-            val result = pendingMediaFolderResult ?: return@registerForActivityResult
-            pendingMediaFolderResult = null
-
-            if (uri == null) {
-                result.success(null)
-                return@registerForActivityResult
-            }
-
-            val allowedExtensions = pendingMediaExtensions
-            val mediaType = pendingMediaType
-            backgroundExecutor.execute {
-                try {
-                    val payload = MediaFolderImporter.importFromTree(
-                        context = applicationContext,
-                        treeUri = uri,
-                        allowedExtensions = allowedExtensions,
-                        mediaType = mediaType,
-                    )
-                    mainHandler.post {
-                        result.success(payload)
-                    }
-                } catch (error: Exception) {
-                    mainHandler.post {
-                        result.error("media_folder_import_failed", error.message, null)
-                    }
-                }
-            }
-        }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -100,10 +76,79 @@ class MainActivity : FlutterActivity() {
                     pendingMediaExtensions = rawExtensions.map { it.lowercase() }.toSet()
                     pendingMediaType = mediaType.lowercase()
                     pendingMediaFolderResult = result
-                    mediaFolderPicker.launch(null)
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+                    }
+                    startActivityForResult(intent, REQUEST_MEDIA_FOLDER)
                 }
 
                 else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_MEDIA_FOLDER) {
+            val result = pendingMediaFolderResult
+            pendingMediaFolderResult = null
+
+            if (result == null) {
+                super.onActivityResult(requestCode, resultCode, data)
+                return
+            }
+
+            if (resultCode != Activity.RESULT_OK) {
+                result.success(null)
+                return
+            }
+
+            val uri = data?.data
+            if (uri == null) {
+                result.error("media_folder_import_failed", "No folder was selected.", null)
+                return
+            }
+
+            persistFolderPermission(uri, data)
+            importSelectedMediaFolder(uri, result)
+            return
+        }
+
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    private fun persistFolderPermission(uri: Uri, data: Intent?) {
+        val grantedFlags = (data?.flags ?: 0) and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        try {
+            contentResolver.takePersistableUriPermission(uri, grantedFlags)
+        } catch (_: SecurityException) {
+            // Some providers do not offer persistable permissions; transient access is still enough.
+        }
+    }
+
+    private fun importSelectedMediaFolder(
+        uri: Uri,
+        result: MethodChannel.Result,
+    ) {
+        val allowedExtensions = pendingMediaExtensions
+        val mediaType = pendingMediaType
+        backgroundExecutor.execute {
+            try {
+                val payload = MediaFolderImporter.importFromTree(
+                    context = applicationContext,
+                    treeUri = uri,
+                    allowedExtensions = allowedExtensions,
+                    mediaType = mediaType,
+                )
+                mainHandler.post {
+                    result.success(payload)
+                }
+            } catch (error: Exception) {
+                mainHandler.post {
+                    result.error("media_folder_import_failed", error.message, null)
+                }
             }
         }
     }

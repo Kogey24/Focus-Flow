@@ -314,7 +314,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   Future<int?> _probeDuration(String filePath) async {
     try {
       final session = await FFprobeKit.getMediaInformation(filePath);
-      final info = await session.getMediaInformation();
+      final info = session.getMediaInformation();
       final rawDuration = info?.getDuration();
       return double.tryParse(rawDuration ?? '')?.round();
     } catch (_) {
@@ -438,7 +438,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
 
     try {
       final session = await FFprobeKit.getMediaInformation(filePath);
-      final info = await session.getMediaInformation();
+      final info = session.getMediaInformation();
       final streamTypes = info
               ?.getStreams()
               .map((stream) => stream.getType()?.toLowerCase())
