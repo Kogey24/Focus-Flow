@@ -36,8 +36,28 @@ dev_dependencies:
     sdk: flutter
   build_runner: ^2.5.4
   drift_dev: ^2.27.0
+  flutter_launcher_icons: ^0.14.4
   flutter_lints: ^5.0.0
   riverpod_generator: ^2.6.5
 
 flutter:
   uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/brand/focus_flow_icon.png
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  web:
+    generate: true
+    image_path: assets/brand/focus_flow_icon.png
+    background_color: "#121A2A"
+    theme_color: "#0C5A55"
+  windows:
+    generate: true
+    image_path: assets/brand/focus_flow_icon.png
+    icon_size: 48
+  macos:
+    generate: true
+    image_path: assets/brand/focus_flow_icon.png
