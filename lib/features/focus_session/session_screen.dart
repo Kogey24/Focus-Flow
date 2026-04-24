@@ -264,107 +264,127 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
             );
           }
 
-          return Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                Text(
-                  selectedMaterial.title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  currentQueuedChapter == null
-                      ? (sessionState.chapters.isEmpty
-                            ? 'Deep focus mode'
-                            : 'Queue complete for this session')
-                      : chapterTree.pathLabel(currentQueuedChapter.id),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          Text(
+                            selectedMaterial.title,
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            currentQueuedChapter == null
+                                ? (sessionState.chapters.isEmpty
+                                      ? 'Deep focus mode'
+                                      : 'Queue complete for this session')
+                                : chapterTree.pathLabel(
+                                    currentQueuedChapter.id,
+                                  ),
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 24),
+                          CountdownTimer(
+                            total: timer.total,
+                            remaining: timer.remaining,
+                          ),
+                          const SizedBox(height: 24),
+                          ProgressBar(
+                            value: selectedMaterial.progress,
+                            type: selectedMaterial.type,
+                            height: 10,
+                          ),
+                          const SizedBox(height: 16),
+                          _QueuedFocusTargetsCard(
+                            title: currentQueuedChapter == null
+                                ? 'Queued items'
+                                : 'Up next in this session',
+                            queuedTargets: currentQueuedChapter == null
+                                ? const []
+                                : queuedTargets,
+                            currentChapterId: currentQueuedChapterId,
+                            emptyMessage: sessionState.chapters.isEmpty
+                                ? 'This session is focused on the whole material.'
+                                : 'You finished every queued item. You can keep the timer running or end the session whenever you are ready.',
+                            onMarkDone: (chapterId) {
+                              ref
+                                  .read(provider.notifier)
+                                  .markQueuedChapterDone(chapterId);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                CountdownTimer(total: timer.total, remaining: timer.remaining),
-                const SizedBox(height: 24),
-                ProgressBar(
-                  value: selectedMaterial.progress,
-                  type: selectedMaterial.type,
-                  height: 10,
-                ),
-                const SizedBox(height: 16),
-                _QueuedFocusTargetsCard(
-                  title: currentQueuedChapter == null
-                      ? 'Queued items'
-                      : 'Up next in this session',
-                  queuedTargets: currentQueuedChapter == null
-                      ? const []
-                      : queuedTargets,
-                  currentChapterId: currentQueuedChapterId,
-                  emptyMessage: sessionState.chapters.isEmpty
-                      ? 'This session is focused on the whole material.'
-                      : 'You finished every queued item. You can keep the timer running or end the session whenever you are ready.',
-                  onMarkDone: (chapterId) {
-                    ref
-                        .read(provider.notifier)
-                        .markQueuedChapterDone(chapterId);
-                  },
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.tonal(
-                        onPressed: () {
-                          final controller = ref.read(
-                            sessionTimerControllerProvider.notifier,
-                          );
-                          if (timer.status == SessionTimerStatus.running) {
-                            controller.pause();
-                          } else if (timer.status ==
-                              SessionTimerStatus.paused) {
-                            controller.resume();
-                          }
-                        },
-                        child: Text(
-                          timer.status == SessionTimerStatus.paused
-                              ? 'Resume'
-                              : 'Pause',
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonal(
+                          onPressed: () {
+                            final controller = ref.read(
+                              sessionTimerControllerProvider.notifier,
+                            );
+                            if (timer.status == SessionTimerStatus.running) {
+                              controller.pause();
+                            } else if (timer.status ==
+                                SessionTimerStatus.paused) {
+                              controller.resume();
+                            }
+                          },
+                          child: Text(
+                            timer.status == SessionTimerStatus.paused
+                                ? 'Resume'
+                                : 'Pause',
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.tonal(
-                        onPressed: currentQueuedChapterId == null
-                            ? null
-                            : () {
-                                ref
-                                    .read(provider.notifier)
-                                    .markCurrentQueueItemDone();
-                              },
-                        child: const Text('Mark done'),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.tonal(
+                          onPressed: currentQueuedChapterId == null
+                              ? null
+                              : () {
+                                  ref
+                                      .read(provider.notifier)
+                                      .markCurrentQueueItemDone();
+                                },
+                          child: const Text('Mark done'),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: () async {
-                      await ref.read(provider.notifier).abandonSession();
-                      ref.read(sessionTimerControllerProvider.notifier).reset();
-                      if (!context.mounted) return;
-                      context.go('/');
-                    },
-                    child: const Text('End session'),
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: () async {
+                        await ref.read(provider.notifier).abandonSession();
+                        ref
+                            .read(sessionTimerControllerProvider.notifier)
+                            .reset();
+                        if (!context.mounted) return;
+                        context.go('/');
+                      },
+                      child: const Text('End session'),
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         },
