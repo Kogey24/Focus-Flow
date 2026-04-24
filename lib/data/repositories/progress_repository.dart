@@ -19,23 +19,38 @@ class ProgressRepository {
   Future<List<DailyFocusStat>> getFocusStats({int? days}) async {
     final now = DateTime.now();
     final start = days == null
-        ? DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6))
-        : DateTime(now.year, now.month, now.day).subtract(Duration(days: days - 1));
+        ? DateTime(
+            now.year,
+            now.month,
+            now.day,
+          ).subtract(const Duration(days: 6))
+        : DateTime(
+            now.year,
+            now.month,
+            now.day,
+          ).subtract(Duration(days: days - 1));
     final dates = List.generate(
       days ?? 7,
       (index) => DateTime(start.year, start.month, start.day + index),
     );
 
-    final streakRows = await (_db.select(_db.streaksTable)
-          ..where((tbl) => tbl.date.isBiggerOrEqualValue(_formatDate(start))))
-        .get();
-    final byDate = {for (final row in streakRows) row.date: row.totalFocusSeconds};
+    final streakRows = await (_db.select(
+      _db.streaksTable,
+    )..where((tbl) => tbl.date.isBiggerOrEqualValue(_formatDate(start)))).get();
+    final byDate = {
+      for (final row in streakRows)
+        row.date: (
+          focusSeconds: row.totalFocusSeconds,
+          sessionCount: row.sessionCount,
+        ),
+    };
 
     return dates
         .map(
           (date) => DailyFocusStat(
             date: date,
-            minutes: (byDate[_formatDate(date)] ?? 0) / 60,
+            minutes: ((byDate[_formatDate(date)]?.focusSeconds) ?? 0) / 60,
+            sessionCount: byDate[_formatDate(date)]?.sessionCount ?? 0,
           ),
         )
         .toList();
@@ -43,38 +58,48 @@ class ProgressRepository {
 
   Future<int> getCompletedMaterialsCount() async {
     final countExpression = _db.materialsTable.id.count();
-    final row = await (_db.selectOnly(_db.materialsTable)
-          ..addColumns([countExpression])
-          ..where(_db.materialsTable.status.equals('completed')))
-        .getSingle();
+    final row =
+        await (_db.selectOnly(_db.materialsTable)
+              ..addColumns([countExpression])
+              ..where(_db.materialsTable.status.equals('completed')))
+            .getSingle();
     return row.read(countExpression) ?? 0;
   }
 
   Future<int> getTotalFocusSeconds({DateTime? from}) async {
     final totalExpression = _db.focusSessionsTable.durationSeconds.sum();
-    final query = _db.selectOnly(_db.focusSessionsTable)..addColumns([totalExpression]);
-    query.where(_db.focusSessionsTable.status.equals(SessionStatus.completed.value));
+    final query = _db.selectOnly(_db.focusSessionsTable)
+      ..addColumns([totalExpression]);
+    query.where(
+      _db.focusSessionsTable.status.equals(SessionStatus.completed.value),
+    );
     if (from != null) {
-      query.where(_db.focusSessionsTable.startedAt.isBiggerOrEqualValue(from.millisecondsSinceEpoch));
+      query.where(
+        _db.focusSessionsTable.startedAt.isBiggerOrEqualValue(
+          from.millisecondsSinceEpoch,
+        ),
+      );
     }
     final row = await query.getSingle();
     return row.read(totalExpression) ?? 0;
   }
 
-  Future<List<MaterialTypeBreakdown>> getMaterialBreakdown({DateTime? from}) async {
+  Future<List<MaterialTypeBreakdown>> getMaterialBreakdown({
+    DateTime? from,
+  }) async {
     final materials = await _db.select(_db.materialsTable).get();
     final materialTypeById = {
-      for (final material in materials) material.id: MaterialType.fromValue(material.type),
+      for (final material in materials)
+        material.id: MaterialType.fromValue(material.type),
     };
 
-    final sessions = await (_db.select(_db.focusSessionsTable)
-          ..where((tbl) => tbl.status.equals(SessionStatus.completed.value)))
-        .get();
+    final sessions = await (_db.select(
+      _db.focusSessionsTable,
+    )..where((tbl) => tbl.status.equals(SessionStatus.completed.value))).get();
 
     final breakdown = <MaterialType, int>{};
     for (final session in sessions) {
-      if (from != null &&
-          session.startedAt < from.millisecondsSinceEpoch) {
+      if (from != null && session.startedAt < from.millisecondsSinceEpoch) {
         continue;
       }
       final type = materialTypeById[session.materialId] ?? MaterialType.book;
@@ -83,30 +108,37 @@ class ProgressRepository {
 
     return breakdown.entries
         .map(
-          (entry) => MaterialTypeBreakdown(
-            type: entry.key,
-            minutes: entry.value / 60,
-          ),
+          (entry) =>
+              MaterialTypeBreakdown(type: entry.key, minutes: entry.value / 60),
         )
         .toList()
       ..sort((a, b) => b.minutes.compareTo(a.minutes));
   }
 
   Future<List<RecentCompletion>> getRecentCompletions({int limit = 8}) async {
-    final chapters = await (_db.select(_db.chaptersTable)
-          ..where((tbl) => tbl.isCompleted.equals(true) & tbl.completedAt.isNotNull())
-          ..orderBy([(tbl) => OrderingTerm.desc(tbl.completedAt)])
-          ..limit(limit))
-        .get();
+    final chapters =
+        await (_db.select(_db.chaptersTable)
+              ..where(
+                (tbl) =>
+                    tbl.isCompleted.equals(true) & tbl.completedAt.isNotNull(),
+              )
+              ..orderBy([(tbl) => OrderingTerm.desc(tbl.completedAt)])
+              ..limit(limit))
+            .get();
     final materials = await _db.select(_db.materialsTable).get();
-    final materialTitles = {for (final material in materials) material.id: material.title};
+    final materialTitles = {
+      for (final material in materials) material.id: material.title,
+    };
 
     return chapters
         .map(
           (chapter) => RecentCompletion(
             chapterTitle: chapter.title,
-            materialTitle: materialTitles[chapter.materialId] ?? 'Unknown material',
-            completedAt: DateTime.fromMillisecondsSinceEpoch(chapter.completedAt!),
+            materialTitle:
+                materialTitles[chapter.materialId] ?? 'Unknown material',
+            completedAt: DateTime.fromMillisecondsSinceEpoch(
+              chapter.completedAt!,
+            ),
             materialId: chapter.materialId,
           ),
         )
@@ -115,7 +147,9 @@ class ProgressRepository {
 
   Stream<List<RecentCompletion>> watchRecentCompletions({int limit = 8}) {
     return (_db.select(_db.chaptersTable)
-          ..where((tbl) => tbl.isCompleted.equals(true) & tbl.completedAt.isNotNull())
+          ..where(
+            (tbl) => tbl.isCompleted.equals(true) & tbl.completedAt.isNotNull(),
+          )
           ..orderBy([(tbl) => OrderingTerm.desc(tbl.completedAt)])
           ..limit(limit))
         .watch()
@@ -126,9 +160,13 @@ class ProgressRepository {
     return StatsSummary(
       totalFocusSeconds: await getTotalFocusSeconds(from: from),
       currentStreak: await SessionRepository(_db).getCurrentStreak(),
-      completedSessions: await SessionRepository(_db).getCompletedSessionsCount(from: from),
+      completedSessions: await SessionRepository(
+        _db,
+      ).getCompletedSessionsCount(from: from),
       completedMaterials: await getCompletedMaterialsCount(),
-      dailyStats: await getFocusStats(days: from == null ? 7 : DateTime.now().difference(from).inDays + 1),
+      dailyStats: await getFocusStats(
+        days: from == null ? 7 : DateTime.now().difference(from).inDays + 1,
+      ),
       typeBreakdown: await getMaterialBreakdown(from: from),
       recentCompletions: await getRecentCompletions(),
     );

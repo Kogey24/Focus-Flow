@@ -4,17 +4,16 @@ class DailyFocusStat {
   const DailyFocusStat({
     required this.date,
     required this.minutes,
+    this.sessionCount = 0,
   });
 
   final DateTime date;
   final double minutes;
+  final int sessionCount;
 }
 
 class MaterialTypeBreakdown {
-  const MaterialTypeBreakdown({
-    required this.type,
-    required this.minutes,
-  });
+  const MaterialTypeBreakdown({required this.type, required this.minutes});
 
   final MaterialType type;
   final double minutes;

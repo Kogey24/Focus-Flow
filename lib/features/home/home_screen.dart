@@ -9,6 +9,7 @@ import '../../core/widgets/empty_state_widget.dart';
 import '../../core/widgets/material_card.dart';
 import '../../core/widgets/streak_badge.dart';
 import '../../core/widgets/stat_card.dart';
+import '../../domain/models/focus_analytics.dart';
 import 'home_notifier.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -33,7 +34,8 @@ class HomeScreen extends ConsumerWidget {
           child: state.when(
             data: (home) {
               return RefreshIndicator(
-                onRefresh: () => ref.read(homeNotifierProvider.notifier).refresh(),
+                onRefresh: () =>
+                    ref.read(homeNotifierProvider.notifier).refresh(),
                 child: ListView(
                   padding: const EdgeInsets.all(AppDimensions.spacing16),
                   children: [
@@ -45,15 +47,17 @@ class HomeScreen extends ConsumerWidget {
                             children: [
                               Text(
                                 '${home.greeting}, ${home.firstName}',
-                                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                      fontWeight: FontWeight.w800,
-                                    ),
+                                style: Theme.of(context).textTheme.headlineSmall
+                                    ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               const SizedBox(height: 6),
                               Text(
                                 'Build momentum with one focused session at a time.',
-                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
                                     ),
                               ),
                             ],
@@ -96,14 +100,15 @@ class HomeScreen extends ConsumerWidget {
                     Text(
                       "Today's focus",
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     if (home.recommendedMaterials.isEmpty)
                       const EmptyStateWidget(
                         title: 'Nothing queued yet',
-                        message: 'Add your first study material to start building a focus flow.',
+                        message:
+                            'Add your first study material to start building a focus flow.',
                         icon: Icons.auto_stories_rounded,
                       )
                     else
@@ -112,7 +117,8 @@ class HomeScreen extends ConsumerWidget {
                           padding: const EdgeInsets.only(bottom: 12),
                           child: MaterialCard(
                             material: material,
-                            onTap: () => context.push('/library/${material.id}'),
+                            onTap: () =>
+                                context.push('/library/${material.id}'),
                           ),
                         ),
                       ),
@@ -137,17 +143,11 @@ class HomeScreen extends ConsumerWidget {
 class _WeeklyChart extends StatelessWidget {
   const _WeeklyChart({required this.stats});
 
-  final List stats;
+  final List<DailyFocusStat> stats;
 
   @override
   Widget build(BuildContext context) {
-    final typedStats = stats.cast<dynamic>();
-    final maxY = typedStats.isEmpty
-        ? 30.0
-        : typedStats
-                .map((item) => (item.minutes as double))
-                .fold<double>(0, (max, value) => value > max ? value : max) +
-            10;
+    const maxY = 1.0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -160,9 +160,16 @@ class _WeeklyChart extends StatelessWidget {
         children: [
           Text(
             'Weekly focus',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Bars fill based on sessions completed: 1-3 = 25%, 4-6 = 75%, 7+ = 100%.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 12),
           SizedBox(
@@ -174,18 +181,26 @@ class _WeeklyChart extends StatelessWidget {
                 gridData: const FlGridData(show: false),
                 borderData: FlBorderData(show: false),
                 titlesData: FlTitlesData(
-                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  leftTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
                   bottomTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
                       getTitlesWidget: (value, meta) {
                         final index = value.toInt();
-                        if (index < 0 || index >= typedStats.length) {
+                        if (index < 0 || index >= stats.length) {
                           return const SizedBox.shrink();
                         }
-                        final label = DurationFormatter.formatDate(typedStats[index].date);
+                        final label = DurationFormatter.formatDate(
+                          stats[index].date,
+                        );
                         return Padding(
                           padding: const EdgeInsets.only(top: 8),
                           child: Text(label.substring(0, 1)),
@@ -195,21 +210,21 @@ class _WeeklyChart extends StatelessWidget {
                   ),
                 ),
                 barGroups: [
-                  for (var i = 0; i < typedStats.length; i++)
+                  for (var i = 0; i < stats.length; i++)
                     BarChartGroupData(
                       x: i,
                       barRods: [
                         BarChartRodData(
-                          toY: typedStats[i].minutes as double,
+                          toY: _sessionFillLevel(stats[i].sessionCount),
                           width: 18,
                           borderRadius: BorderRadius.circular(8),
                           color: Theme.of(context).colorScheme.primary,
                           backDrawRodData: BackgroundBarChartRodData(
                             show: true,
                             toY: maxY,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
                           ),
                         ),
                       ],
@@ -221,5 +236,12 @@ class _WeeklyChart extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  double _sessionFillLevel(int sessionCount) {
+    if (sessionCount >= 7) return 1;
+    if (sessionCount >= 4) return 0.75;
+    if (sessionCount >= 1) return 0.25;
+    return 0;
   }
 }
