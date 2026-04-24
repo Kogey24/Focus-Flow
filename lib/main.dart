@@ -55,8 +55,9 @@ class FocusFlowApp extends ConsumerWidget {
 
 ThemeData _buildTheme(Brightness brightness) {
   final isDark = brightness == Brightness.dark;
-  final scaffoldBackgroundColor =
-      isDark ? AppColors.darkBackground : const Color(0xFFF8FAFD);
+  final scaffoldBackgroundColor = isDark
+      ? AppColors.darkBackground
+      : const Color(0xFFF8FAFD);
   final baseScheme = ColorScheme.fromSeed(
     brightness: brightness,
     seedColor: AppColors.primary,
@@ -66,7 +67,9 @@ ThemeData _buildTheme(Brightness brightness) {
   final colorScheme = baseScheme.copyWith(
     primary: AppColors.primary,
     surface: isDark ? AppColors.darkSurface : Colors.white,
-    surfaceContainerHighest: isDark ? AppColors.darkSurfaceAlt : AppColors.lightSurfaceAlt,
+    surfaceContainerHighest: isDark
+        ? AppColors.darkSurfaceAlt
+        : AppColors.lightSurfaceAlt,
   );
 
   final base = ThemeData(
@@ -85,7 +88,7 @@ ThemeData _buildTheme(Brightness brightness) {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: colorScheme.outlineVariant.withOpacity(0.25),
+          color: colorScheme.outlineVariant.withValues(alpha: 0.25),
         ),
       ),
     ),
@@ -104,29 +107,22 @@ ThemeData _buildTheme(Brightness brightness) {
       fillColor: colorScheme.surface,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: BorderSide(
-          color: colorScheme.outlineVariant,
-        ),
+        borderSide: BorderSide(color: colorScheme.outlineVariant),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
         borderSide: BorderSide(
-          color: colorScheme.outlineVariant.withOpacity(0.6),
+          color: colorScheme.outlineVariant.withValues(alpha: 0.6),
         ),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: BorderSide(
-          color: colorScheme.primary,
-          width: 1.4,
-        ),
+        borderSide: BorderSide(color: colorScheme.primary, width: 1.4),
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       ),
     ),
@@ -159,23 +155,12 @@ GoRouter router(Ref ref) {
       ),
       ShellRoute(
         navigatorKey: _shellNavigatorKey,
-        builder: (context, state, child) => _AppShell(
-          location: state.uri.toString(),
-          child: child,
-        ),
+        builder: (context, state, child) =>
+            _AppShell(location: state.uri.toString(), child: child),
         routes: [
-          GoRoute(
-            path: '/',
-            builder: (_, __) => const HomeScreen(),
-          ),
-          GoRoute(
-            path: '/library',
-            builder: (_, __) => const LibraryScreen(),
-          ),
-          GoRoute(
-            path: '/stats',
-            builder: (_, __) => const StatsScreen(),
-          ),
+          GoRoute(path: '/', builder: (_, __) => const HomeScreen()),
+          GoRoute(path: '/library', builder: (_, __) => const LibraryScreen()),
+          GoRoute(path: '/stats', builder: (_, __) => const StatsScreen()),
           GoRoute(
             path: '/settings',
             builder: (_, __) => const SettingsScreen(),
@@ -185,15 +170,19 @@ GoRouter router(Ref ref) {
       GoRoute(
         path: '/session',
         builder: (_, state) => FocusSessionScreen(
-          materialId: state.uri.queryParameters['materialId'],
-          chapterId: state.uri.queryParameters['chapterId'],
+          materialId:
+              (state.extra as SessionLaunchArgs?)?.materialId ??
+              state.uri.queryParameters['materialId'],
+          chapterId:
+              (state.extra as SessionLaunchArgs?)?.chapterId ??
+              state.uri.queryParameters['chapterId'],
+          launchArgs: state.extra as SessionLaunchArgs?,
         ),
       ),
       GoRoute(
         path: '/session/complete',
-        builder: (_, state) => SessionCompleteScreen(
-          args: state.extra as SessionCompleteArgs?,
-        ),
+        builder: (_, state) =>
+            SessionCompleteScreen(args: state.extra as SessionCompleteArgs?),
       ),
     ],
     redirect: (_, state) {
@@ -207,10 +196,7 @@ GoRouter router(Ref ref) {
 }
 
 class _AppShell extends StatelessWidget {
-  const _AppShell({
-    required this.location,
-    required this.child,
-  });
+  const _AppShell({required this.location, required this.child});
 
   final String location;
   final Widget child;
@@ -245,9 +231,18 @@ class _AppShell extends StatelessWidget {
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_rounded), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.video_library_rounded), label: 'Library'),
-          NavigationDestination(icon: Icon(Icons.play_circle_fill_rounded), label: 'Session'),
-          NavigationDestination(icon: Icon(Icons.bar_chart_rounded), label: 'Stats'),
+          NavigationDestination(
+            icon: Icon(Icons.video_library_rounded),
+            label: 'Library',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.play_circle_fill_rounded),
+            label: 'Session',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.bar_chart_rounded),
+            label: 'Stats',
+          ),
         ],
       ),
     );

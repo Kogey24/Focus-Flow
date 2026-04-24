@@ -125,6 +125,60 @@ class SessionNotifier extends _$SessionNotifier {
     state = AsyncData(current.copyWith(durationMinutes: minutes));
   }
 
+  void configureSession({
+    List<String>? queuedChapterIds,
+    int? durationMinutes,
+  }) {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    final chapterTree = ChapterTree.fromChapters(current.chapters);
+    final availableLeafIds = chapterTree
+        .leafChapters()
+        .where((chapter) => !chapter.isCompleted)
+        .map((chapter) => chapter.id)
+        .toList(growable: false);
+
+    List<String> normalizedQueue() {
+      final sourceQueue = queuedChapterIds;
+      if (sourceQueue == null) {
+        return current.queuedChapterIds;
+      }
+
+      final result = <String>[];
+      for (final chapterId in sourceQueue) {
+        final normalizedChapterId = chapterTree.normalizeToLeafId(chapterId);
+        if (normalizedChapterId == null ||
+            !availableLeafIds.contains(normalizedChapterId) ||
+            result.contains(normalizedChapterId)) {
+          continue;
+        }
+        result.add(normalizedChapterId);
+      }
+
+      result.sort(
+        (a, b) =>
+            availableLeafIds.indexOf(a).compareTo(availableLeafIds.indexOf(b)),
+      );
+      return result;
+    }
+
+    final nextQueue = normalizedQueue();
+    final nextSelectedChapterId = nextQueue.contains(current.selectedChapterId)
+        ? current.selectedChapterId
+        : (nextQueue.isEmpty
+              ? (current.chapters.isEmpty ? null : current.selectedChapterId)
+              : nextQueue.first);
+
+    state = AsyncData(
+      current.copyWith(
+        selectedChapterId: nextSelectedChapterId,
+        queuedChapterIds: nextQueue,
+        durationMinutes: durationMinutes ?? current.durationMinutes,
+      ),
+    );
+  }
+
   Future<void> startSession() async {
     final current = state.valueOrNull;
     if (current == null || current.selectedMaterialId == null) return;

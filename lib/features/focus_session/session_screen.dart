@@ -15,10 +15,16 @@ import 'session_notifier.dart';
 import 'session_state.dart';
 
 class FocusSessionScreen extends ConsumerStatefulWidget {
-  const FocusSessionScreen({super.key, this.materialId, this.chapterId});
+  const FocusSessionScreen({
+    super.key,
+    this.materialId,
+    this.chapterId,
+    this.launchArgs,
+  });
 
   final String? materialId;
   final String? chapterId;
+  final SessionLaunchArgs? launchArgs;
 
   @override
   ConsumerState<FocusSessionScreen> createState() => _FocusSessionScreenState();
@@ -27,14 +33,26 @@ class FocusSessionScreen extends ConsumerStatefulWidget {
 class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   bool _finished = false;
   bool _syncedRouteSelection = false;
+  bool _appliedLaunchArgs = false;
   List<String> _selectionPath = const [];
+
+  String? get _effectiveMaterialId =>
+      widget.launchArgs?.materialId ?? widget.materialId;
+
+  String? get _effectiveChapterId =>
+      widget.launchArgs?.chapterId ??
+      (widget.launchArgs?.queuedChapterIds.isNotEmpty == true
+          ? widget.launchArgs!.queuedChapterIds.first
+          : widget.chapterId);
 
   @override
   void didUpdateWidget(covariant FocusSessionScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.materialId != widget.materialId ||
-        oldWidget.chapterId != widget.chapterId) {
+        oldWidget.chapterId != widget.chapterId ||
+        oldWidget.launchArgs != widget.launchArgs) {
       _syncedRouteSelection = false;
+      _appliedLaunchArgs = false;
       _selectionPath = const [];
     }
   }
@@ -42,8 +60,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = sessionNotifierProvider(
-      materialId: widget.materialId,
-      chapterId: widget.chapterId,
+      materialId: _effectiveMaterialId,
+      chapterId: _effectiveChapterId,
     );
     final state = ref.watch(provider);
     final timer = ref.watch(sessionTimerControllerProvider);
@@ -81,6 +99,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                     (id: chapterId, label: chapterTree.pathLabel(chapterId)),
               )
               .toList(growable: false);
+
+          _applyLaunchArgsIfNeeded(provider);
 
           _syncRouteSelection(
             chapterTree,
@@ -404,8 +424,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
     await ref
         .read(
           sessionNotifierProvider(
-            materialId: widget.materialId,
-            chapterId: widget.chapterId,
+            materialId: _effectiveMaterialId,
+            chapterId: _effectiveChapterId,
           ).notifier,
         )
         .selectMaterial(materialId);
@@ -419,8 +439,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   }) {
     final notifier = ref.read(
       sessionNotifierProvider(
-        materialId: widget.materialId,
-        chapterId: widget.chapterId,
+        materialId: _effectiveMaterialId,
+        chapterId: _effectiveChapterId,
       ).notifier,
     );
     _syncedRouteSelection = true;
@@ -442,8 +462,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   void _goBackLevel() {
     final notifier = ref.read(
       sessionNotifierProvider(
-        materialId: widget.materialId,
-        chapterId: widget.chapterId,
+        materialId: _effectiveMaterialId,
+        chapterId: _effectiveChapterId,
       ).notifier,
     );
     _syncedRouteSelection = true;
@@ -488,8 +508,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
 
   Future<void> _startSession(SessionViewState sessionState) async {
     final provider = sessionNotifierProvider(
-      materialId: widget.materialId,
-      chapterId: widget.chapterId,
+      materialId: _effectiveMaterialId,
+      chapterId: _effectiveChapterId,
     );
     final notifier = ref.read(provider.notifier);
     await notifier.startSession();
@@ -510,24 +530,71 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   ) async {
     if (_finished) return;
     _finished = true;
+    final provider = sessionNotifierProvider(
+      materialId: _effectiveMaterialId,
+      chapterId: _effectiveChapterId,
+    );
+    final sessionState = ref.read(provider).valueOrNull;
     final timer = ref.read(sessionTimerControllerProvider);
     final spentSeconds = timer.elapsed.inSeconds == 0
         ? plannedSeconds
         : timer.elapsed.inSeconds;
     await ref
-        .read(
-          sessionNotifierProvider(
-            materialId: widget.materialId,
-            chapterId: widget.chapterId,
-          ).notifier,
-        )
+        .read(provider.notifier)
         .completeSession(actualDurationSeconds: spentSeconds);
     ref.read(sessionTimerControllerProvider.notifier).reset();
     if (!context.mounted) return;
     context.go(
       '/session/complete',
-      extra: SessionCompleteArgs(focusSeconds: spentSeconds),
+      extra: SessionCompleteArgs(
+        focusSeconds: spentSeconds,
+        continuation:
+            sessionState == null ||
+                sessionState.selectedMaterialId == null ||
+                sessionState.queuedChapterIds.isEmpty
+            ? null
+            : SessionLaunchArgs(
+                materialId: sessionState.selectedMaterialId,
+                chapterId: sessionState.currentQueuedChapterId,
+                queuedChapterIds: sessionState.queuedChapterIds,
+                durationMinutes: sessionState.durationMinutes,
+                autoStart: true,
+              ),
+      ),
     );
+  }
+
+  void _applyLaunchArgsIfNeeded(dynamic provider) {
+    final launchArgs = widget.launchArgs;
+    if (launchArgs == null || _appliedLaunchArgs) {
+      return;
+    }
+
+    _appliedLaunchArgs = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+
+      final notifier = ref.read(provider.notifier);
+      notifier.configureSession(
+        queuedChapterIds: launchArgs.queuedChapterIds,
+        durationMinutes: launchArgs.durationMinutes,
+      );
+
+      if (!launchArgs.autoStart) {
+        return;
+      }
+
+      final updatedState = ref.read(provider).valueOrNull;
+      if (!mounted ||
+          updatedState == null ||
+          updatedState.activeSessionId != null ||
+          (updatedState.chapters.isNotEmpty &&
+              updatedState.queuedChapterIds.isEmpty)) {
+        return;
+      }
+
+      await _startSession(updatedState);
+    });
   }
 }
 
@@ -929,9 +996,26 @@ class _QueuedFocusTargetsCard extends StatelessWidget {
 }
 
 class SessionCompleteArgs {
-  const SessionCompleteArgs({required this.focusSeconds});
+  const SessionCompleteArgs({required this.focusSeconds, this.continuation});
 
   final int focusSeconds;
+  final SessionLaunchArgs? continuation;
+}
+
+class SessionLaunchArgs {
+  const SessionLaunchArgs({
+    this.materialId,
+    this.chapterId,
+    this.queuedChapterIds = const [],
+    this.durationMinutes,
+    this.autoStart = false,
+  });
+
+  final String? materialId;
+  final String? chapterId;
+  final List<String> queuedChapterIds;
+  final int? durationMinutes;
+  final bool autoStart;
 }
 
 class SessionCompleteScreen extends StatelessWidget {
@@ -942,6 +1026,8 @@ class SessionCompleteScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final seconds = args?.focusSeconds ?? 1500;
+    final queuedItemsRemaining =
+        args?.continuation?.queuedChapterIds.length ?? 0;
     return Scaffold(
       body: SafeArea(
         child: Padding(
@@ -973,6 +1059,13 @@ class SessionCompleteScreen extends StatelessWidget {
                         'You stayed focused for ${DurationFormatter.asCompact(Duration(seconds: seconds))}.',
                         textAlign: TextAlign.center,
                       ),
+                      if (queuedItemsRemaining > 0) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          '$queuedItemsRemaining queued item${queuedItemsRemaining == 1 ? '' : 's'} still remain. Start another will continue with them.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -980,7 +1073,8 @@ class SessionCompleteScreen extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton(
-                  onPressed: () => context.go('/session'),
+                  onPressed: () =>
+                      context.go('/session', extra: args?.continuation),
                   child: const Text('Start another'),
                 ),
               ),
