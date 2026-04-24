@@ -7,8 +7,9 @@ The app is designed around a local-first workflow. You can import books, videos,
 ## Core Features
 
 - Library management for books, videos, audio, and manually structured courses
-- Focus sessions with selectable duration and progress tracking
+- Focus sessions with selectable duration, queued study targets, and progress tracking
 - Hierarchical reading flow for books: part -> chapter -> topic -> start session
+- Multi-item focus queues for book topics, video episodes, and audio tracks within one session
 - Local progress tracking for chapters, topics, sessions, and completions
 - Notes on book sections from the material detail view
 - Home dashboard with streaks, today's focus time, and recommended materials
@@ -29,6 +30,7 @@ The app is designed around a local-first workflow. You can import books, videos,
 - Import multiple files or scan a folder
 - Each file becomes a track, lesson, or episode entry
 - Duration is probed from the media file
+- You can queue multiple episodes or tracks into one focus session and move through them without restarting the timer
 
 ### Courses
 
@@ -45,9 +47,10 @@ The intended flow is:
 2. Let the app detect the book structure from the table of contents when possible.
 3. Open the book in the library to see its nested structure.
 4. Start a focus session and drill down through the hierarchy.
-5. Select the final readable node, such as a topic or leaf chapter, and begin the session.
+5. Select one or more final readable nodes, such as topics or leaf chapters, to build the queue.
+6. Begin one focus session that keeps advancing through the queued topics until the session time ends.
 
-If a selected item still has children, the app shows the next level instead of starting immediately. A session only starts once the selected item is a final leaf in the hierarchy.
+If a selected item still has children, the app shows the next level instead of adding it immediately. Queue entries are created only from final leaf sections in the hierarchy. During the session, marking the current topic done removes it from the queue and displays the next queued topic without ending the timer.
 
 ## Table of Contents Parsing
 
@@ -147,19 +150,29 @@ flutter build apk --release
 5. Review the detected structure
 6. Save it to the library
 
-### Start a focus session for a book
+### Start a queued focus session for a book
 
 1. Open `Focus session`
 2. Select a book
 3. Choose a part
 4. Choose a chapter if the part contains chapters
-5. Choose a topic if the chapter contains topics
+5. Choose one or more final topics or leaf chapters to add to the queue
 6. Set the session length
 7. Start the session
+8. Mark each topic done to advance to the next queued topic while the same session keeps running
+
+### Start a queued focus session for video or audio
+
+1. Open a video or audio material from the library
+2. Enter the focus-session flow from that material
+3. Add multiple episodes or tracks to the queue
+4. Start one session for the full queue
+5. Mark the current item done to move to the next queued item without restarting the session
 
 ### Track progress
 
-- Mark sections complete
+- Mark sections, topics, episodes, or tracks complete from within the running session
+- Let the queue advance automatically to the next selected item in the same session
 - Return to the material detail view to continue from the next incomplete leaf
 - Review streaks and summaries from `Home` and `Stats`
 
