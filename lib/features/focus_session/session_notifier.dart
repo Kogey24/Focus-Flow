@@ -22,20 +22,25 @@ class SessionNotifier extends _$SessionNotifier {
   }) async {
     final materialRepository = ref.watch(materialRepositoryProvider);
     final materials = await materialRepository.getInProgress(limit: 50);
-    final fallbackMaterialId = materials.any((material) => material.id == materialId)
+    final fallbackMaterialId =
+        materials.any((material) => material.id == materialId)
         ? materialId
         : (materials.isNotEmpty ? materials.first.id : null);
     final chapters = fallbackMaterialId == null
         ? <Chapter>[]
         : await materialRepository.getChapters(fallbackMaterialId);
     final chapterTree = ChapterTree.fromChapters(chapters);
+    final initialChapterId = chapterTree.normalizeToLeafId(chapterId);
     final prefs = ref.watch(sharedPreferencesProvider);
 
     return SessionViewState(
       materials: materials,
       chapters: chapters,
       selectedMaterialId: fallbackMaterialId,
-      selectedChapterId: chapterId == null ? null : chapterTree.normalizeToLeafId(chapterId),
+      selectedChapterId: initialChapterId,
+      queuedChapterIds: initialChapterId == null
+          ? const []
+          : [initialChapterId],
       durationMinutes: prefs.getInt('default_session_minutes') ?? 25,
     );
   }
@@ -43,11 +48,18 @@ class SessionNotifier extends _$SessionNotifier {
   Future<void> selectMaterial(String? materialId) async {
     final current = state.valueOrNull;
     if (current == null || materialId == null) return;
-    final chapters = await ref.read(materialRepositoryProvider).getChapters(materialId);
+    final chapters = await ref
+        .read(materialRepositoryProvider)
+        .getChapters(materialId);
+    final chapterTree = ChapterTree.fromChapters(chapters);
+    final initialChapterId = chapterTree.normalizeToLeafId(null);
     state = AsyncData(
       current.copyWith(
         selectedMaterialId: materialId,
-        selectedChapterId: null,
+        selectedChapterId: initialChapterId,
+        queuedChapterIds: initialChapterId == null
+            ? const []
+            : [initialChapterId],
         chapters: chapters,
       ),
     );
@@ -59,7 +71,50 @@ class SessionNotifier extends _$SessionNotifier {
     final chapterTree = ChapterTree.fromChapters(current.chapters);
     state = AsyncData(
       current.copyWith(
-        selectedChapterId: chapterId == null ? null : chapterTree.normalizeToLeafId(chapterId),
+        selectedChapterId: chapterId == null
+            ? null
+            : chapterTree.normalizeToLeafId(chapterId),
+      ),
+    );
+  }
+
+  void toggleQueuedChapter(String chapterId) {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    final chapterTree = ChapterTree.fromChapters(current.chapters);
+    final normalizedChapterId = chapterTree.normalizeToLeafId(chapterId);
+    if (normalizedChapterId == null) return;
+
+    final queue = [...current.queuedChapterIds];
+    final existingIndex = queue.indexOf(normalizedChapterId);
+    if (existingIndex >= 0) {
+      queue.removeAt(existingIndex);
+    } else {
+      queue.add(normalizedChapterId);
+      final orderedLeafIds = chapterTree
+          .leafChapters()
+          .map((chapter) => chapter.id)
+          .toList(growable: false);
+      queue.sort(
+        (a, b) =>
+            orderedLeafIds.indexOf(a).compareTo(orderedLeafIds.indexOf(b)),
+      );
+    }
+
+    final nextSelectedChapterId = switch ((
+      existingIndex >= 0,
+      current.selectedChapterId == normalizedChapterId,
+    )) {
+      (true, true) => queue.isEmpty ? null : queue.first,
+      (true, false) => current.selectedChapterId,
+      _ => normalizedChapterId,
+    };
+
+    state = AsyncData(
+      current.copyWith(
+        selectedChapterId: nextSelectedChapterId,
+        queuedChapterIds: queue,
       ),
     );
   }
@@ -73,10 +128,14 @@ class SessionNotifier extends _$SessionNotifier {
   Future<void> startSession() async {
     final current = state.valueOrNull;
     if (current == null || current.selectedMaterialId == null) return;
-    if (current.chapters.isNotEmpty && current.selectedChapterId == null) return;
-    final session = await ref.read(sessionRepositoryProvider).startSession(
+    if (current.chapters.isNotEmpty && current.currentQueuedChapterId == null) {
+      return;
+    }
+    final session = await ref
+        .read(sessionRepositoryProvider)
+        .startSession(
           materialId: current.selectedMaterialId!,
-          chapterId: current.selectedChapterId,
+          chapterId: current.currentQueuedChapterId,
           durationSeconds: current.durationMinutes * 60,
         );
     state = AsyncData(current.copyWith(activeSessionId: session.id));
@@ -85,10 +144,13 @@ class SessionNotifier extends _$SessionNotifier {
   Future<void> completeSession({required int actualDurationSeconds}) async {
     final current = state.valueOrNull;
     if (current == null || current.activeSessionId == null) return;
-    await ref.read(sessionRepositoryProvider).completeSession(
+    await ref
+        .read(sessionRepositoryProvider)
+        .completeSession(
           sessionId: current.activeSessionId!,
           actualDurationSeconds: actualDurationSeconds,
         );
+    state = AsyncData(current.copyWith(activeSessionId: null));
     ref.invalidate(homeNotifierProvider);
     ref.invalidate(statsNotifierProvider);
     ref.invalidate(libraryNotifierProvider);
@@ -97,19 +159,60 @@ class SessionNotifier extends _$SessionNotifier {
   Future<void> abandonSession() async {
     final current = state.valueOrNull;
     if (current == null || current.activeSessionId == null) return;
-    await ref.read(sessionRepositoryProvider).abandonSession(current.activeSessionId!);
+    await ref
+        .read(sessionRepositoryProvider)
+        .abandonSession(current.activeSessionId!);
+    state = AsyncData(current.copyWith(activeSessionId: null));
   }
 
-  Future<void> markSelectedChapterDone() async {
+  Future<void> markCurrentQueueItemDone() async {
     final current = state.valueOrNull;
-    if (current == null || current.selectedMaterialId == null || current.selectedChapterId == null) {
+    final currentChapterId = current?.currentQueuedChapterId;
+    if (current == null ||
+        current.selectedMaterialId == null ||
+        currentChapterId == null) {
       return;
     }
-    await ref.read(materialRepositoryProvider).toggleChapterCompletion(
-          materialId: current.selectedMaterialId!,
-          chapterId: current.selectedChapterId!,
-          completed: true,
-        );
+    final materialRepository = ref.read(materialRepositoryProvider);
+    await materialRepository.toggleChapterCompletion(
+      materialId: current.selectedMaterialId!,
+      chapterId: currentChapterId,
+      completed: true,
+    );
+    final updatedMaterial = await materialRepository.getMaterialById(
+      current.selectedMaterialId!,
+    );
+    final updatedChapters = await materialRepository.getChapters(
+      current.selectedMaterialId!,
+    );
+    final availableChapterIds = {
+      for (final chapter in updatedChapters)
+        if (!chapter.isCompleted) chapter.id,
+    };
+    final remainingQueue = current.queuedChapterIds
+        .where(
+          (chapterId) =>
+              chapterId != currentChapterId &&
+              availableChapterIds.contains(chapterId),
+        )
+        .toList(growable: false);
+    final updatedMaterials = updatedMaterial == null
+        ? current.materials
+        : current.materials
+              .map(
+                (material) => material.id == updatedMaterial.id
+                    ? updatedMaterial
+                    : material,
+              )
+              .toList(growable: false);
+    state = AsyncData(
+      current.copyWith(
+        materials: updatedMaterials,
+        chapters: updatedChapters,
+        selectedChapterId: remainingQueue.isEmpty ? null : remainingQueue.first,
+        queuedChapterIds: remainingQueue,
+      ),
+    );
     ref.invalidate(libraryNotifierProvider);
     ref.invalidate(statsNotifierProvider);
     ref.invalidate(homeNotifierProvider);

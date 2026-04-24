@@ -71,24 +71,30 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
           final selectedChapter = sessionState.selectedChapterId == null
               ? null
               : chapterTree.chapterById(sessionState.selectedChapterId);
+          final currentQueuedChapterId = sessionState.currentQueuedChapterId;
+          final currentQueuedChapter = currentQueuedChapterId == null
+              ? null
+              : chapterTree.chapterById(currentQueuedChapterId);
+          final queuedPathLabels = sessionState.queuedChapterIds
+              .map(chapterTree.pathLabel)
+              .toList(growable: false);
 
-          _syncRouteSelection(chapterTree, sessionState.selectedChapterId);
+          _syncRouteSelection(
+            chapterTree,
+            sessionState.selectedChapterId ?? currentQueuedChapterId,
+          );
 
           final visiblePath = _selectionPath
               .where((chapterId) => chapterTree.chapterById(chapterId) != null)
               .toList(growable: false);
           final currentParentId = visiblePath.isEmpty ? null : visiblePath.last;
           final visibleChapters = chapterTree.childrenOf(currentParentId);
-          final isSelectionVisible =
-              selectedChapter != null &&
-              visibleChapters.any(
-                (chapter) => chapter.id == selectedChapter.id,
-              );
           final selectedPathLabel = selectedChapter == null
               ? null
               : chapterTree.pathLabel(selectedChapter.id);
           final canStartSession =
-              sessionState.chapters.isEmpty || isSelectionVisible;
+              sessionState.chapters.isEmpty ||
+              sessionState.queuedChapterIds.isNotEmpty;
 
           if (sessionState.activeSessionId == null) {
             return Padding(
@@ -114,9 +120,10 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  selectedMaterial.type == study.MaterialType.book
-                                      ? 'Choose a book, drill into the right part, chapter, or topic, then lock in your session length.'
-                                      : 'Choose a material, pick the section you want, and move into focused work without distractions.',
+                                  selectedMaterial.type ==
+                                          study.MaterialType.book
+                                      ? 'Build a reading queue by drilling into the exact topics you want to cover, then let the session keep moving through them.'
+                                      : 'Pick one or more sections for this focus block. Each completed item drops out of the queue and the next one takes over.',
                                   style: Theme.of(context).textTheme.bodyMedium,
                                 ),
                               ],
@@ -169,6 +176,7 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                             visiblePath: visiblePath,
                             visibleChapters: visibleChapters,
                             selectedChapterId: sessionState.selectedChapterId,
+                            queuedChapterIds: sessionState.queuedChapterIds,
                             onBack: visiblePath.isEmpty ? null : _goBackLevel,
                             onChapterTap: (chapter) => _handleChapterTap(
                               tree: chapterTree,
@@ -179,10 +187,24 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                           const SizedBox(height: 16),
                           Card(
                             child: ListTile(
-                              leading: const Icon(Icons.playlist_play_rounded),
-                              title: const Text('Selected focus target'),
+                              leading: const Icon(Icons.explore_rounded),
+                              title: const Text('Current selection'),
                               subtitle: Text(selectedPathLabel),
                             ),
+                          ),
+                        ],
+                        if (sessionState.queuedChapterIds.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          _QueuedFocusTargetsCard(
+                            title: 'Queued for this session',
+                            queuedPathLabels: queuedPathLabels,
+                            onRemove: (index) {
+                              final chapterId =
+                                  sessionState.queuedChapterIds[index];
+                              ref
+                                  .read(provider.notifier)
+                                  .toggleQueuedChapter(chapterId);
+                            },
                           ),
                         ],
                         const SizedBox(height: 16),
@@ -229,7 +251,11 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                       onPressed: canStartSession
                           ? () => _startSession(sessionState)
                           : null,
-                      child: const Text('Start session'),
+                      child: Text(
+                        sessionState.queuedChapterIds.length > 1
+                            ? 'Start queued session'
+                            : 'Start session',
+                      ),
                     ),
                   ),
                 ],
@@ -250,7 +276,11 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  selectedPathLabel ?? 'Deep focus mode',
+                  currentQueuedChapter == null
+                      ? (sessionState.chapters.isEmpty
+                            ? 'Deep focus mode'
+                            : 'Queue complete for this session')
+                      : chapterTree.pathLabel(currentQueuedChapter.id),
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -263,6 +293,18 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                   value: selectedMaterial.progress,
                   type: selectedMaterial.type,
                   height: 10,
+                ),
+                const SizedBox(height: 16),
+                _QueuedFocusTargetsCard(
+                  title: currentQueuedChapter == null
+                      ? 'Queued items'
+                      : 'Up next in this session',
+                  queuedPathLabels: currentQueuedChapter == null
+                      ? const []
+                      : queuedPathLabels,
+                  emptyMessage: sessionState.chapters.isEmpty
+                      ? 'This session is focused on the whole material.'
+                      : 'You finished every queued item. You can keep the timer running or end the session whenever you are ready.',
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -290,9 +332,13 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton.tonal(
-                        onPressed: () {
-                          ref.read(provider.notifier).markSelectedChapterDone();
-                        },
+                        onPressed: currentQueuedChapterId == null
+                            ? null
+                            : () {
+                                ref
+                                    .read(provider.notifier)
+                                    .markCurrentQueueItemDone();
+                              },
                         child: const Text('Mark done'),
                       ),
                     ),
@@ -363,7 +409,7 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
       return;
     }
 
-    notifier.selectChapter(chapter.id);
+    notifier.toggleQueuedChapter(chapter.id);
   }
 
   void _goBackLevel() {
@@ -399,8 +445,9 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   void _syncRouteSelection(ChapterTree tree, String? selectedChapterId) {
     if (_syncedRouteSelection ||
         widget.chapterId == null ||
-        selectedChapterId == null)
+        selectedChapterId == null) {
       return;
+    }
     _syncedRouteSelection = true;
     final nextPath = tree
         .ancestorIdsOf(selectedChapterId)
@@ -474,7 +521,7 @@ class _SessionMaterialTile extends StatelessWidget {
 
     return Material(
       color: isSelected
-          ? theme.colorScheme.primary.withOpacity(0.08)
+          ? theme.colorScheme.primary.withValues(alpha: 0.08)
           : theme.colorScheme.surface,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
@@ -486,7 +533,9 @@ class _SessionMaterialTile extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 22,
-                backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                backgroundColor: theme.colorScheme.primary.withValues(
+                  alpha: 0.12,
+                ),
                 child: Icon(
                   material.type.icon,
                   color: theme.colorScheme.primary,
@@ -541,6 +590,7 @@ class _HierarchySelectionCard extends StatelessWidget {
     required this.visiblePath,
     required this.visibleChapters,
     required this.selectedChapterId,
+    required this.queuedChapterIds,
     required this.onChapterTap,
     this.onBack,
   });
@@ -550,6 +600,7 @@ class _HierarchySelectionCard extends StatelessWidget {
   final List<String> visiblePath;
   final List<Chapter> visibleChapters;
   final String? selectedChapterId;
+  final List<String> queuedChapterIds;
   final VoidCallback? onBack;
   final void Function(Chapter chapter) onChapterTap;
 
@@ -584,7 +635,7 @@ class _HierarchySelectionCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               visiblePath.isEmpty
-                  ? 'Start from the top level and keep drilling down until you reach the exact section to study.'
+                  ? 'Drill down to a final section, then tap it to add or remove it from this session queue.'
                   : visiblePath
                         .map((id) => chapterTree.chapterById(id)?.title)
                         .whereType<String>()
@@ -607,6 +658,7 @@ class _HierarchySelectionCard extends StatelessWidget {
                     chapter: chapter,
                     chapterTree: chapterTree,
                     isSelected: selectedChapterId == chapter.id,
+                    isQueued: queuedChapterIds.contains(chapter.id),
                     onTap: () => onChapterTap(chapter),
                   ),
                 ),
@@ -635,12 +687,14 @@ class _ChapterSelectionTile extends StatelessWidget {
     required this.chapter,
     required this.chapterTree,
     required this.isSelected,
+    required this.isQueued,
     required this.onTap,
   });
 
   final Chapter chapter;
   final ChapterTree chapterTree;
   final bool isSelected;
+  final bool isQueued;
   final VoidCallback onTap;
 
   @override
@@ -648,11 +702,12 @@ class _ChapterSelectionTile extends StatelessWidget {
     final theme = Theme.of(context);
     final hasChildren = chapterTree.hasChildren(chapter.id);
     final subtitle = hasChildren ? _branchSubtitle() : _leafSubtitle();
+    final isHighlighted = isSelected || isQueued;
 
     return Material(
-      color: isSelected
-          ? theme.colorScheme.primary.withOpacity(0.08)
-          : theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
+      color: isHighlighted
+          ? theme.colorScheme.primary.withValues(alpha: 0.08)
+          : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
@@ -665,8 +720,10 @@ class _ChapterSelectionTile extends StatelessWidget {
               Icon(
                 hasChildren
                     ? Icons.account_tree_rounded
+                    : isQueued
+                    ? Icons.playlist_add_check_circle_rounded
                     : Icons.article_outlined,
-                color: isSelected
+                color: isHighlighted
                     ? theme.colorScheme.primary
                     : theme.colorScheme.onSurfaceVariant,
               ),
@@ -678,7 +735,7 @@ class _ChapterSelectionTile extends StatelessWidget {
                     Text(
                       chapter.title,
                       style: theme.textTheme.bodyLarge?.copyWith(
-                        fontWeight: isSelected
+                        fontWeight: isHighlighted
                             ? FontWeight.w700
                             : FontWeight.w600,
                       ),
@@ -699,10 +756,10 @@ class _ChapterSelectionTile extends StatelessWidget {
               Icon(
                 hasChildren
                     ? Icons.chevron_right_rounded
-                    : isSelected
+                    : isQueued
                     ? Icons.check_circle_rounded
-                    : Icons.play_circle_outline_rounded,
-                color: hasChildren || isSelected
+                    : Icons.playlist_add_rounded,
+                color: hasChildren || isHighlighted
                     ? theme.colorScheme.primary
                     : theme.colorScheme.onSurfaceVariant,
               ),
@@ -729,6 +786,88 @@ class _ChapterSelectionTile extends StatelessWidget {
     final end = chapter.pageEnd ?? chapter.pageStart;
     if (end == chapter.pageStart) return 'Page ${chapter.pageStart}';
     return 'Pages ${chapter.pageStart}-$end';
+  }
+}
+
+class _QueuedFocusTargetsCard extends StatelessWidget {
+  const _QueuedFocusTargetsCard({
+    required this.title,
+    required this.queuedPathLabels,
+    this.emptyMessage =
+        'Nothing is queued yet. Add one or more items to keep this session moving.',
+    this.onRemove,
+  });
+
+  final String title;
+  final List<String> queuedPathLabels;
+  final String emptyMessage;
+  final void Function(int index)? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              queuedPathLabels.isEmpty
+                  ? emptyMessage
+                  : 'Items stay in order so the next focus target is ready as soon as you finish the current one.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (queuedPathLabels.isEmpty) const SizedBox(height: 8),
+            if (queuedPathLabels.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              ...List.generate(
+                queuedPathLabels.length,
+                (index) => Padding(
+                  padding: EdgeInsets.only(
+                    bottom: index == queuedPathLabels.length - 1 ? 0 : 10,
+                  ),
+                  child: Material(
+                    color: theme.colorScheme.surfaceContainerHighest.withValues(
+                      alpha: 0.35,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        radius: 16,
+                        backgroundColor: theme.colorScheme.primary.withValues(
+                          alpha: 0.12,
+                        ),
+                        child: Text('${index + 1}'),
+                      ),
+                      title: Text(queuedPathLabels[index]),
+                      subtitle: Text(index == 0 ? 'Starts first' : 'Up next'),
+                      trailing: onRemove == null
+                          ? null
+                          : IconButton(
+                              onPressed: () => onRemove!(index),
+                              icon: const Icon(Icons.close_rounded),
+                              tooltip: 'Remove from queue',
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -26,7 +26,9 @@ class SessionRepository {
   }) async {
     final id = _uuid.v4();
     final startedAt = DateTime.now();
-    await _db.into(_db.focusSessionsTable).insert(
+    await _db
+        .into(_db.focusSessionsTable)
+        .insert(
           FocusSessionsTableCompanion.insert(
             id: id,
             materialId: materialId,
@@ -38,9 +40,9 @@ class SessionRepository {
           ),
         );
 
-    await (_db.update(_db.materialsTable)..where((tbl) => tbl.id.equals(materialId))).write(
-      const MaterialsTableCompanion(status: Value('in_progress')),
-    );
+    await (_db.update(_db.materialsTable)
+          ..where((tbl) => tbl.id.equals(materialId)))
+        .write(const MaterialsTableCompanion(status: Value('in_progress')));
 
     return FocusSession(
       id: id,
@@ -57,11 +59,9 @@ class SessionRepository {
     required String sessionId,
     required SessionStatus status,
   }) async {
-    await (_db.update(_db.focusSessionsTable)..where((tbl) => tbl.id.equals(sessionId))).write(
-      FocusSessionsTableCompanion(
-        status: Value(status.value),
-      ),
-    );
+    await (_db.update(_db.focusSessionsTable)
+          ..where((tbl) => tbl.id.equals(sessionId)))
+        .write(FocusSessionsTableCompanion(status: Value(status.value)));
   }
 
   Future<void> completeSession({
@@ -69,11 +69,10 @@ class SessionRepository {
     required int actualDurationSeconds,
   }) async {
     final now = DateTime.now();
-    final session = await (_db.select(_db.focusSessionsTable)
-          ..where((tbl) => tbl.id.equals(sessionId)))
-        .getSingle();
 
-    await (_db.update(_db.focusSessionsTable)..where((tbl) => tbl.id.equals(sessionId))).write(
+    await (_db.update(
+      _db.focusSessionsTable,
+    )..where((tbl) => tbl.id.equals(sessionId))).write(
       FocusSessionsTableCompanion(
         endedAt: Value(now.millisecondsSinceEpoch),
         durationSeconds: Value(actualDurationSeconds),
@@ -81,18 +80,13 @@ class SessionRepository {
       ),
     );
 
-    await _upsertStreak(
-      date: now,
-      focusSeconds: actualDurationSeconds,
-    );
-
-    await (_db.update(_db.materialsTable)..where((tbl) => tbl.id.equals(session.materialId))).write(
-      const MaterialsTableCompanion(status: Value('in_progress')),
-    );
+    await _upsertStreak(date: now, focusSeconds: actualDurationSeconds);
   }
 
   Future<void> abandonSession(String sessionId) async {
-    await (_db.update(_db.focusSessionsTable)..where((tbl) => tbl.id.equals(sessionId))).write(
+    await (_db.update(
+      _db.focusSessionsTable,
+    )..where((tbl) => tbl.id.equals(sessionId))).write(
       FocusSessionsTableCompanion(
         endedAt: Value(DateTime.now().millisecondsSinceEpoch),
         status: const Value('abandoned'),
@@ -102,16 +96,37 @@ class SessionRepository {
 
   Future<int> getTodayFocusSeconds() async {
     final now = DateTime.now();
-    final startOfDay = DateTime(now.year, now.month, now.day).millisecondsSinceEpoch;
-    final endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59, 999)
-        .millisecondsSinceEpoch;
+    final startOfDay = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).millisecondsSinceEpoch;
+    final endOfDay = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      23,
+      59,
+      59,
+      999,
+    ).millisecondsSinceEpoch;
 
     final totalExpression = _db.focusSessionsTable.durationSeconds.sum();
-    final row = await (_db.selectOnly(_db.focusSessionsTable)
-          ..addColumns([totalExpression])
-          ..where(_db.focusSessionsTable.startedAt.isBetweenValues(startOfDay, endOfDay))
-          ..where(_db.focusSessionsTable.status.equals(SessionStatus.completed.value)))
-        .getSingle();
+    final row =
+        await (_db.selectOnly(_db.focusSessionsTable)
+              ..addColumns([totalExpression])
+              ..where(
+                _db.focusSessionsTable.startedAt.isBetweenValues(
+                  startOfDay,
+                  endOfDay,
+                ),
+              )
+              ..where(
+                _db.focusSessionsTable.status.equals(
+                  SessionStatus.completed.value,
+                ),
+              ))
+            .getSingle();
     return row.read(totalExpression) ?? 0;
   }
 
@@ -119,9 +134,15 @@ class SessionRepository {
     final countExpression = _db.focusSessionsTable.id.count();
     final query = _db.selectOnly(_db.focusSessionsTable)
       ..addColumns([countExpression]);
-    query.where(_db.focusSessionsTable.status.equals(SessionStatus.completed.value));
+    query.where(
+      _db.focusSessionsTable.status.equals(SessionStatus.completed.value),
+    );
     if (from != null) {
-      query.where(_db.focusSessionsTable.startedAt.isBiggerOrEqualValue(from.millisecondsSinceEpoch));
+      query.where(
+        _db.focusSessionsTable.startedAt.isBiggerOrEqualValue(
+          from.millisecondsSinceEpoch,
+        ),
+      );
     }
     final row = await query.getSingle();
     return row.read(countExpression) ?? 0;
@@ -135,22 +156,23 @@ class SessionRepository {
   }
 
   Future<int> getCurrentStreak() async {
-    final rows = await (_db.select(_db.streaksTable)
-          ..orderBy([(tbl) => OrderingTerm.desc(tbl.date)]))
-        .get();
+    final rows = await (_db.select(
+      _db.streaksTable,
+    )..orderBy([(tbl) => OrderingTerm.desc(tbl.date)])).get();
     if (rows.isEmpty) return 0;
 
     final today = DateTime.now();
-    final dates = rows
-        .map((row) => _dateFormat.parse(row.date))
-        .toSet()
-        .toList()
-      ..sort((a, b) => b.compareTo(a));
+    final dates =
+        rows.map((row) => _dateFormat.parse(row.date)).toSet().toList()
+          ..sort((a, b) => b.compareTo(a));
 
     final normalizedToday = DateTime(today.year, today.month, today.day);
-    final normalizedYesterday = normalizedToday.subtract(const Duration(days: 1));
+    final normalizedYesterday = normalizedToday.subtract(
+      const Duration(days: 1),
+    );
     final first = dates.first;
-    if (!_isSameDay(first, normalizedToday) && !_isSameDay(first, normalizedYesterday)) {
+    if (!_isSameDay(first, normalizedToday) &&
+        !_isSameDay(first, normalizedYesterday)) {
       return 0;
     }
 
@@ -175,12 +197,14 @@ class SessionRepository {
     required int focusSeconds,
   }) async {
     final key = _dateFormat.format(date);
-    final existing = await (_db.select(_db.streaksTable)
-          ..where((tbl) => tbl.date.equals(key)))
-        .getSingleOrNull();
+    final existing = await (_db.select(
+      _db.streaksTable,
+    )..where((tbl) => tbl.date.equals(key))).getSingleOrNull();
 
     if (existing == null) {
-      await _db.into(_db.streaksTable).insert(
+      await _db
+          .into(_db.streaksTable)
+          .insert(
             StreaksTableCompanion.insert(
               id: _uuid.v4(),
               date: key,
@@ -189,7 +213,9 @@ class SessionRepository {
             ),
           );
     } else {
-      await (_db.update(_db.streaksTable)..where((tbl) => tbl.id.equals(existing.id))).write(
+      await (_db.update(
+        _db.streaksTable,
+      )..where((tbl) => tbl.id.equals(existing.id))).write(
         StreaksTableCompanion(
           totalFocusSeconds: Value(existing.totalFocusSeconds + focusSeconds),
           sessionCount: Value(existing.sessionCount + 1),

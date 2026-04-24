@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,6 +14,7 @@ class SessionViewState {
     required this.chapters,
     required this.selectedMaterialId,
     required this.selectedChapterId,
+    required this.queuedChapterIds,
     required this.durationMinutes,
     this.activeSessionId,
   });
@@ -23,14 +23,19 @@ class SessionViewState {
   final List<Chapter> chapters;
   final String? selectedMaterialId;
   final String? selectedChapterId;
+  final List<String> queuedChapterIds;
   final int durationMinutes;
   final String? activeSessionId;
+
+  String? get currentQueuedChapterId =>
+      queuedChapterIds.isEmpty ? null : queuedChapterIds.first;
 
   SessionViewState copyWith({
     List<StudyMaterial>? materials,
     List<Chapter>? chapters,
     Object? selectedMaterialId = _unset,
     Object? selectedChapterId = _unset,
+    List<String>? queuedChapterIds,
     int? durationMinutes,
     Object? activeSessionId = _unset,
   }) {
@@ -43,8 +48,11 @@ class SessionViewState {
       selectedChapterId: selectedChapterId == _unset
           ? this.selectedChapterId
           : selectedChapterId as String?,
+      queuedChapterIds: queuedChapterIds ?? this.queuedChapterIds,
       durationMinutes: durationMinutes ?? this.durationMinutes,
-      activeSessionId: activeSessionId == _unset ? this.activeSessionId : activeSessionId as String?,
+      activeSessionId: activeSessionId == _unset
+          ? this.activeSessionId
+          : activeSessionId as String?,
     );
   }
 }
@@ -65,13 +73,13 @@ class SessionTimerState {
 
 class SessionTimerController extends StateNotifier<SessionTimerState> {
   SessionTimerController()
-      : super(
-          const SessionTimerState(
-            total: Duration.zero,
-            remaining: Duration.zero,
-            status: SessionTimerStatus.idle,
-          ),
-        );
+    : super(
+        const SessionTimerState(
+          total: Duration.zero,
+          remaining: Duration.zero,
+          status: SessionTimerStatus.idle,
+        ),
+      );
 
   Ticker? _ticker;
   DateTime? _targetEnd;
@@ -151,8 +159,11 @@ class SessionTimerController extends StateNotifier<SessionTimerState> {
 }
 
 final sessionTimerControllerProvider =
-    StateNotifierProvider.autoDispose<SessionTimerController, SessionTimerState>((ref) {
-  final controller = SessionTimerController();
-  ref.onDispose(controller.dispose);
-  return controller;
-});
+    StateNotifierProvider.autoDispose<
+      SessionTimerController,
+      SessionTimerState
+    >((ref) {
+      final controller = SessionTimerController();
+      ref.onDispose(controller.dispose);
+      return controller;
+    });

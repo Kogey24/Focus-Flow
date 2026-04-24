@@ -30,8 +30,10 @@ class AudioDetailScreen extends StatelessWidget {
             title: Text(material.title),
             subtitle: Text('${chapters.length} tracks'),
             trailing: FilledButton(
-              onPressed: () => context.push('/session?materialId=${material.id}&chapterId=$activeChapterId'),
-              child: const Text('Play next'),
+              onPressed: () => context.push(
+                '/session?materialId=${material.id}&chapterId=$activeChapterId',
+              ),
+              child: const Text('Build queue'),
             ),
           ),
         ),
@@ -44,7 +46,11 @@ class AudioDetailScreen extends StatelessWidget {
               title: Text(chapter.title),
               subtitle: chapter.duration == null
                   ? null
-                  : Text(DurationFormatter.asCompact(Duration(seconds: chapter.duration!))),
+                  : Text(
+                      DurationFormatter.asCompact(
+                        Duration(seconds: chapter.duration!),
+                      ),
+                    ),
               secondary: const Icon(Icons.graphic_eq_rounded),
               controlAffinity: ListTileControlAffinity.trailing,
             ),

@@ -31,18 +31,18 @@ class BookDetailScreen extends StatelessWidget {
 
     return _MaterialDetailShell(
       material: material,
-      buttonLabel: 'Continue reading',
+      buttonLabel: 'Build focus queue',
       buttonAction: activeLeafId == null
           ? null
           : () => context.push(
-                Uri(
-                  path: '/session',
-                  queryParameters: {
-                    'materialId': material.id,
-                    'chapterId': activeLeafId,
-                  },
-                ).toString(),
-              ),
+              Uri(
+                path: '/session',
+                queryParameters: {
+                  'materialId': material.id,
+                  'chapterId': activeLeafId,
+                },
+              ).toString(),
+            ),
       child: chapterTree.roots.isEmpty
           ? const SizedBox.shrink()
           : Column(
@@ -56,7 +56,8 @@ class BookDetailScreen extends StatelessWidget {
                         activeLeafId: activeLeafId,
                         expandedIds: expandedIds,
                         onToggleChapter: onToggleChapter,
-                        onAddNote: (chapter) => _showNoteDialog(context, chapter),
+                        onAddNote: (chapter) =>
+                            _showNoteDialog(context, chapter),
                         onOpenSession: (chapterId) {
                           context.push(
                             Uri(
@@ -160,16 +161,18 @@ class _BookChapterNodeTile extends StatelessWidget {
           title: Text(
             node.chapter.title,
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  fontWeight: expandedIds.contains(node.chapter.id) ? FontWeight.w700 : FontWeight.w600,
-                ),
+              fontWeight: expandedIds.contains(node.chapter.id)
+                  ? FontWeight.w700
+                  : FontWeight.w600,
+            ),
           ),
           subtitle: subtitleParts.isEmpty
               ? null
               : Text(
                   subtitleParts.join('  -  '),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
           children: node.children
               .map(
@@ -235,8 +238,8 @@ class _MaterialDetailShell extends StatelessWidget {
                 Text(
                   material.title,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 if ((material.author ?? '').isNotEmpty) ...[
                   const SizedBox(height: 4),
@@ -253,10 +256,7 @@ class _MaterialDetailShell extends StatelessWidget {
         const SizedBox(height: 16),
         child,
         const SizedBox(height: 20),
-        FilledButton(
-          onPressed: buttonAction,
-          child: Text(buttonLabel),
-        ),
+        FilledButton(onPressed: buttonAction, child: Text(buttonLabel)),
       ],
     );
   }

@@ -31,8 +31,10 @@ class VideoDetailScreen extends StatelessWidget {
             title: Text(material.title),
             subtitle: Text(material.author ?? '${chapters.length} episodes'),
             trailing: FilledButton(
-              onPressed: () => context.push('/session?materialId=${material.id}&chapterId=$activeChapterId'),
-              child: const Text('Resume'),
+              onPressed: () => context.push(
+                '/session?materialId=${material.id}&chapterId=$activeChapterId',
+              ),
+              child: const Text('Build queue'),
             ),
           ),
         ),
@@ -46,10 +48,16 @@ class VideoDetailScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (chapter.duration != null)
-                    Text(DurationFormatter.asCompact(Duration(seconds: chapter.duration!))),
+                    Text(
+                      DurationFormatter.asCompact(
+                        Duration(seconds: chapter.duration!),
+                      ),
+                    ),
                   const SizedBox(height: 8),
                   ProgressBar(
-                    value: chapter.isCompleted ? 1 : (chapter.id == activeChapterId ? 0.55 : 0),
+                    value: chapter.isCompleted
+                        ? 1
+                        : (chapter.id == activeChapterId ? 0.55 : 0),
                     type: material.type,
                   ),
                 ],
@@ -57,10 +65,14 @@ class VideoDetailScreen extends StatelessWidget {
               trailing: IconButton(
                 onPressed: () => onToggleChapter(chapter.id),
                 icon: Icon(
-                  chapter.isCompleted ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                  chapter.isCompleted
+                      ? Icons.check_circle_rounded
+                      : Icons.radio_button_unchecked_rounded,
                 ),
               ),
-              onTap: () => context.push('/session?materialId=${material.id}&chapterId=${chapter.id}'),
+              onTap: () => context.push(
+                '/session?materialId=${material.id}&chapterId=${chapter.id}',
+              ),
             ),
           ),
         ),
