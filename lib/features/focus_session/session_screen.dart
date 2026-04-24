@@ -75,8 +75,11 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
           final currentQueuedChapter = currentQueuedChapterId == null
               ? null
               : chapterTree.chapterById(currentQueuedChapterId);
-          final queuedPathLabels = sessionState.queuedChapterIds
-              .map(chapterTree.pathLabel)
+          final queuedTargets = sessionState.queuedChapterIds
+              .map(
+                (chapterId) =>
+                    (id: chapterId, label: chapterTree.pathLabel(chapterId)),
+              )
               .toList(growable: false);
 
           _syncRouteSelection(
@@ -197,10 +200,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                           const SizedBox(height: 16),
                           _QueuedFocusTargetsCard(
                             title: 'Queued for this session',
-                            queuedPathLabels: queuedPathLabels,
-                            onRemove: (index) {
-                              final chapterId =
-                                  sessionState.queuedChapterIds[index];
+                            queuedTargets: queuedTargets,
+                            onRemove: (chapterId) {
                               ref
                                   .read(provider.notifier)
                                   .toggleQueuedChapter(chapterId);
@@ -299,12 +300,18 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                   title: currentQueuedChapter == null
                       ? 'Queued items'
                       : 'Up next in this session',
-                  queuedPathLabels: currentQueuedChapter == null
+                  queuedTargets: currentQueuedChapter == null
                       ? const []
-                      : queuedPathLabels,
+                      : queuedTargets,
+                  currentChapterId: currentQueuedChapterId,
                   emptyMessage: sessionState.chapters.isEmpty
                       ? 'This session is focused on the whole material.'
                       : 'You finished every queued item. You can keep the timer running or end the session whenever you are ready.',
+                  onMarkDone: (chapterId) {
+                    ref
+                        .read(provider.notifier)
+                        .markQueuedChapterDone(chapterId);
+                  },
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -792,16 +799,20 @@ class _ChapterSelectionTile extends StatelessWidget {
 class _QueuedFocusTargetsCard extends StatelessWidget {
   const _QueuedFocusTargetsCard({
     required this.title,
-    required this.queuedPathLabels,
+    required this.queuedTargets,
     this.emptyMessage =
         'Nothing is queued yet. Add one or more items to keep this session moving.',
+    this.currentChapterId,
     this.onRemove,
+    this.onMarkDone,
   });
 
   final String title;
-  final List<String> queuedPathLabels;
+  final List<({String id, String label})> queuedTargets;
   final String emptyMessage;
-  final void Function(int index)? onRemove;
+  final String? currentChapterId;
+  final void Function(String chapterId)? onRemove;
+  final void Function(String chapterId)? onMarkDone;
 
   @override
   Widget build(BuildContext context) {
@@ -821,45 +832,71 @@ class _QueuedFocusTargetsCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              queuedPathLabels.isEmpty
+              queuedTargets.isEmpty
                   ? emptyMessage
+                  : onMarkDone != null
+                  ? 'Tap any queued item when you finish it and it will be marked done and removed from this session.'
                   : 'Items stay in order so the next focus target is ready as soon as you finish the current one.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
-            if (queuedPathLabels.isEmpty) const SizedBox(height: 8),
-            if (queuedPathLabels.isNotEmpty) ...[
+            if (queuedTargets.isEmpty) const SizedBox(height: 8),
+            if (queuedTargets.isNotEmpty) ...[
               const SizedBox(height: 12),
               ...List.generate(
-                queuedPathLabels.length,
+                queuedTargets.length,
                 (index) => Padding(
                   padding: EdgeInsets.only(
-                    bottom: index == queuedPathLabels.length - 1 ? 0 : 10,
+                    bottom: index == queuedTargets.length - 1 ? 0 : 10,
                   ),
-                  child: Material(
-                    color: theme.colorScheme.surfaceContainerHighest.withValues(
-                      alpha: 0.35,
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        radius: 16,
-                        backgroundColor: theme.colorScheme.primary.withValues(
-                          alpha: 0.12,
+                  child: Builder(
+                    builder: (context) {
+                      final target = queuedTargets[index];
+                      final isCurrent = target.id == currentChapterId;
+
+                      return Material(
+                        color: isCurrent
+                            ? theme.colorScheme.primary.withValues(alpha: 0.08)
+                            : theme.colorScheme.surfaceContainerHighest
+                                  .withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(14),
+                        child: ListTile(
+                          onTap: onMarkDone == null
+                              ? null
+                              : () => onMarkDone!(target.id),
+                          leading: CircleAvatar(
+                            radius: 16,
+                            backgroundColor: theme.colorScheme.primary
+                                .withValues(alpha: 0.12),
+                            child: Text('${index + 1}'),
+                          ),
+                          title: Text(target.label),
+                          subtitle: Text(
+                            isCurrent
+                                ? 'Current item'
+                                : onMarkDone == null
+                                ? 'Up next'
+                                : 'Tap to mark done',
+                          ),
+                          trailing: onRemove != null
+                              ? IconButton(
+                                  onPressed: () => onRemove!(target.id),
+                                  icon: const Icon(Icons.close_rounded),
+                                  tooltip: 'Remove from queue',
+                                )
+                              : onMarkDone != null
+                              ? IconButton(
+                                  onPressed: () => onMarkDone!(target.id),
+                                  icon: const Icon(
+                                    Icons.check_circle_outline_rounded,
+                                  ),
+                                  tooltip: 'Mark done',
+                                )
+                              : null,
                         ),
-                        child: Text('${index + 1}'),
-                      ),
-                      title: Text(queuedPathLabels[index]),
-                      subtitle: Text(index == 0 ? 'Starts first' : 'Up next'),
-                      trailing: onRemove == null
-                          ? null
-                          : IconButton(
-                              onPressed: () => onRemove!(index),
-                              icon: const Icon(Icons.close_rounded),
-                              tooltip: 'Remove from queue',
-                            ),
-                    ),
+                      );
+                    },
                   ),
                 ),
               ),

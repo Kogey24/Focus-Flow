@@ -166,17 +166,29 @@ class SessionNotifier extends _$SessionNotifier {
   }
 
   Future<void> markCurrentQueueItemDone() async {
-    final current = state.valueOrNull;
-    final currentChapterId = current?.currentQueuedChapterId;
-    if (current == null ||
-        current.selectedMaterialId == null ||
-        currentChapterId == null) {
+    final currentChapterId = state.valueOrNull?.currentQueuedChapterId;
+    if (currentChapterId == null) {
       return;
     }
+    await markQueuedChapterDone(currentChapterId);
+  }
+
+  Future<void> markQueuedChapterDone(String chapterId) async {
+    final current = state.valueOrNull;
+    if (current == null || current.selectedMaterialId == null) {
+      return;
+    }
+    final chapterTree = ChapterTree.fromChapters(current.chapters);
+    final normalizedChapterId = chapterTree.normalizeToLeafId(chapterId);
+    if (normalizedChapterId == null ||
+        !current.queuedChapterIds.contains(normalizedChapterId)) {
+      return;
+    }
+
     final materialRepository = ref.read(materialRepositoryProvider);
     await materialRepository.toggleChapterCompletion(
       materialId: current.selectedMaterialId!,
-      chapterId: currentChapterId,
+      chapterId: normalizedChapterId,
       completed: true,
     );
     final updatedMaterial = await materialRepository.getMaterialById(
@@ -192,10 +204,14 @@ class SessionNotifier extends _$SessionNotifier {
     final remainingQueue = current.queuedChapterIds
         .where(
           (chapterId) =>
-              chapterId != currentChapterId &&
+              chapterId != normalizedChapterId &&
               availableChapterIds.contains(chapterId),
         )
         .toList(growable: false);
+    final nextSelectedChapterId =
+        remainingQueue.contains(current.selectedChapterId)
+        ? current.selectedChapterId
+        : (remainingQueue.isEmpty ? null : remainingQueue.first);
     final updatedMaterials = updatedMaterial == null
         ? current.materials
         : current.materials
@@ -209,7 +225,7 @@ class SessionNotifier extends _$SessionNotifier {
       current.copyWith(
         materials: updatedMaterials,
         chapters: updatedChapters,
-        selectedChapterId: remainingQueue.isEmpty ? null : remainingQueue.first,
+        selectedChapterId: nextSelectedChapterId,
         queuedChapterIds: remainingQueue,
       ),
     );
