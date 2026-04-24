@@ -34,6 +34,7 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
   bool _finished = false;
   bool _syncedRouteSelection = false;
   bool _appliedLaunchArgs = false;
+  bool _isEditingQueue = false;
   List<String> _selectionPath = const [];
 
   String? get _effectiveMaterialId =>
@@ -53,6 +54,7 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
         oldWidget.launchArgs != widget.launchArgs) {
       _syncedRouteSelection = false;
       _appliedLaunchArgs = false;
+      _isEditingQueue = false;
       _selectionPath = const [];
     }
   }
@@ -115,11 +117,13 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
           final selectedPathLabel = selectedChapter == null
               ? null
               : chapterTree.pathLabel(selectedChapter.id);
+          final isEditingQueue =
+              sessionState.activeSessionId != null && _isEditingQueue;
           final canStartSession =
               sessionState.chapters.isEmpty ||
               sessionState.queuedChapterIds.isNotEmpty;
 
-          if (sessionState.activeSessionId == null) {
+          if (sessionState.activeSessionId == null || isEditingQueue) {
             return Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
@@ -135,7 +139,9 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'Prepare your next focus block',
+                                  isEditingQueue
+                                      ? 'Add more to this session'
+                                      : 'Prepare your next focus block',
                                   style: Theme.of(context)
                                       .textTheme
                                       .headlineSmall
@@ -143,8 +149,10 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  selectedMaterial.type ==
-                                          study.MaterialType.book
+                                  isEditingQueue
+                                      ? 'Your timer is paused. Add more queued items from this material, then resume the same focus session when you are ready.'
+                                      : selectedMaterial.type ==
+                                            study.MaterialType.book
                                       ? 'Build a reading queue by drilling into the exact topics you want to cover, then let the session keep moving through them.'
                                       : 'Pick one or more sections for this focus block. Each completed item drops out of the queue and the next one takes over.',
                                   style: Theme.of(context).textTheme.bodyMedium,
@@ -154,22 +162,46 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                           ),
                         ),
                         const SizedBox(height: 20),
-                        Text(
-                          'Choose material',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 12),
-                        ...sessionState.materials.map(
-                          (material) => Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _SessionMaterialTile(
-                              material: material,
-                              isSelected: material.id == selectedMaterial.id,
-                              onTap: () => _selectMaterial(material.id),
+                        if (isEditingQueue) ...[
+                          Text(
+                            'Current material',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 12),
+                          _SessionMaterialTile(
+                            material: selectedMaterial,
+                            isSelected: true,
+                            onTap: () {},
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Switching to another material is disabled while this session is active. Add more topics, episodes, or tracks from the current material, then resume.',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ] else ...[
+                          Text(
+                            'Choose material',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 12),
+                          ...sessionState.materials.map(
+                            (material) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _SessionMaterialTile(
+                                material: material,
+                                isSelected: material.id == selectedMaterial.id,
+                                onTap: () => _selectMaterial(material.id),
+                              ),
                             ),
                           ),
-                        ),
+                        ],
                         const SizedBox(height: 8),
                         Text(
                           sessionState.chapters.isEmpty
@@ -221,6 +253,7 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                           _QueuedFocusTargetsCard(
                             title: 'Queued for this session',
                             queuedTargets: queuedTargets,
+                            currentChapterId: currentQueuedChapterId,
                             onRemove: (chapterId) {
                               ref
                                   .read(provider.notifier)
@@ -270,15 +303,40 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                     width: double.infinity,
                     child: FilledButton(
                       onPressed: canStartSession
-                          ? () => _startSession(sessionState)
+                          ? () {
+                              if (isEditingQueue) {
+                                _resumeSession();
+                                return;
+                              }
+                              _startSession(sessionState);
+                            }
                           : null,
                       child: Text(
-                        sessionState.queuedChapterIds.length > 1
+                        isEditingQueue
+                            ? 'Resume session'
+                            : sessionState.queuedChapterIds.length > 1
                             ? 'Start queued session'
                             : 'Start session',
                       ),
                     ),
                   ),
+                  if (isEditingQueue) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          await ref.read(provider.notifier).abandonSession();
+                          ref
+                              .read(sessionTimerControllerProvider.notifier)
+                              .reset();
+                          if (!context.mounted) return;
+                          context.go('/');
+                        },
+                        child: const Text('End session'),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
@@ -376,14 +434,8 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: FilledButton.tonal(
-                          onPressed: currentQueuedChapterId == null
-                              ? null
-                              : () {
-                                  ref
-                                      .read(provider.notifier)
-                                      .markCurrentQueueItemDone();
-                                },
-                          child: const Text('Mark done'),
+                          onPressed: () => _beginAddingMaterial(sessionState),
+                          child: const Text('Add material'),
                         ),
                       ),
                     ],
@@ -472,6 +524,43 @@ class _FocusSessionScreenState extends ConsumerState<FocusSessionScreen> {
     setState(() {
       _selectionPath = _selectionPath.sublist(0, _selectionPath.length - 1);
     });
+  }
+
+  void _beginAddingMaterial(SessionViewState sessionState) {
+    final timerController = ref.read(sessionTimerControllerProvider.notifier);
+    final timer = ref.read(sessionTimerControllerProvider);
+    if (timer.status == SessionTimerStatus.running) {
+      timerController.pause();
+    }
+
+    final chapterTree = ChapterTree.fromChapters(sessionState.chapters);
+    final anchorChapterId =
+        sessionState.currentQueuedChapterId ?? sessionState.selectedChapterId;
+    final nextPath = anchorChapterId == null
+        ? const <String>[]
+        : chapterTree
+              .ancestorIdsOf(anchorChapterId)
+              .reversed
+              .toList(growable: false);
+
+    setState(() {
+      _isEditingQueue = true;
+      _selectionPath = nextPath;
+      _syncedRouteSelection = true;
+    });
+  }
+
+  void _resumeSession() {
+    final timerController = ref.read(sessionTimerControllerProvider.notifier);
+    final timer = ref.read(sessionTimerControllerProvider);
+
+    setState(() {
+      _isEditingQueue = false;
+    });
+
+    if (timer.status == SessionTimerStatus.paused) {
+      timerController.resume();
+    }
   }
 
   String _selectionTitleFor({
