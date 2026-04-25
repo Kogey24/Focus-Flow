@@ -2,14 +2,15 @@
 
 Focus Flow is a Flutter study companion for organizing learning material, breaking it into manageable sections, and running focused study sessions against that structure.
 
-The app is designed around a local-first workflow. You can import books, videos, audio, and manually structured courses, track progress through sections, and view focus history and streaks over time.
+The app is designed around a local-first workflow. You can import books, videos, audio, and structured courses, track progress through sections, and view focus history and streaks over time. Courses can now also start from a pasted URL, with the app attempting to fetch public course metadata and outlines when the source exposes them.
 
 ## Core Features
 
-- Library management for books, videos, audio, and manually structured courses
+- Library management for books, videos, audio, and structured courses
 - Focus sessions with selectable duration, queued study targets, and progress tracking
 - Hierarchical reading flow for books: part -> chapter -> topic -> start session
 - Multi-item focus queues for book topics, video episodes, and audio tracks within one session
+- Course URL import foundation for public course pages and playlist-style learning links
 - Local progress tracking for chapters, topics, sessions, and completions
 - Notes on book sections from the material detail view
 - Home dashboard with streaks, today's focus time, and recommended materials
@@ -34,8 +35,40 @@ The app is designed around a local-first workflow. You can import books, videos,
 
 ### Courses
 
-- Structured manually inside the app
+- Can still be structured manually inside the app
+- Can now start from a pasted course URL using the course import flow
+- Public course pages may provide:
+  - course title
+  - provider/site name
+  - thumbnail
+  - lesson/topic list
+  - lesson durations
+- The current import foundation works best with:
+  - YouTube playlist-style pages
+  - public pages that expose JSON-LD or similar structured page data
+- If an online page exposes only partial data, the app falls back to page metadata and lets you finish the outline manually
 - Useful for linking external material, online lessons, or custom study plans
+
+## Online Course Import Behavior
+
+The course URL flow is intentionally best-effort.
+
+Current behavior:
+
+1. Choose `Course` in `Add material`.
+2. Paste a public course URL.
+3. Tap `Fetch outline`.
+4. The app tries provider-aware parsing first, then generic structured-page parsing.
+5. If topics/episodes are found, they are previewed as course items with durations when available.
+6. If only page metadata is available, the app can still save the course and you can add manual topics.
+
+Important notes:
+
+- Online import is metadata-first. It does not download or mirror the remote course content.
+- Release Android builds must include `android.permission.INTERNET` in `android/app/src/main/AndroidManifest.xml` for course URL fetching to work.
+- Some providers block bots, require JavaScript execution, or require an authenticated browser session before showing the real curriculum.
+- Protected share links can fail even when they open normally in Chrome on the phone.
+- Existing materials keep the type they were saved with. For example, an older item saved as a `Book` will remain a book even if its text contains a course URL.
 
 ## Book Hierarchy Behavior
 
@@ -80,6 +113,7 @@ Important notes:
 - `pdfx` for PDF handling in Flutter
 - `pdfbox-android` for Android table-of-contents extraction
 - `ffmpeg_kit_audio_flutter` for media duration probing
+- `dart:io` HTTP fetching for public course metadata and outline import
 
 ## Project Structure
 
@@ -136,8 +170,14 @@ dart run build_runner build --delete-conflicting-outputs
 ### Build a release APK
 
 ```bash
-flutter build apk --release
+flutter build apk --release --split-per-abi
 ```
+
+This produces the ABI-split APK pattern used for testing:
+
+- `app-arm64-v8a-release.apk`
+- `app-armeabi-v7a-release.apk`
+- `app-x86_64-release.apk`
 
 ## Typical Usage
 
@@ -169,6 +209,17 @@ flutter build apk --release
 4. Start one session for the full queue
 5. Mark the current item done to move to the next queued item without restarting the session
 
+### Add a course from a URL
+
+1. Open `Library`
+2. Tap `Add material`
+3. Choose `Course`
+4. Paste a course URL into `Course URL`
+5. Tap `Fetch outline`
+6. Review the imported title, provider, topics, and durations if available
+7. Add or edit manual topics if the source exposes only partial data
+8. Save the course to the library
+
 ### Track progress
 
 - Mark sections, topics, episodes, or tracks complete from within the running session
@@ -181,6 +232,7 @@ flutter build apk --release
 Focus Flow is currently local-first.
 
 - Imported source files are copied into the app's documents directory
+- Online course imports store fetched metadata and remote source URLs locally, but not the remote media itself
 - Material metadata, chapters, notes, sessions, snapshots, and streaks are stored locally
 - Clearing app data from settings removes local materials, sessions, notes, and stats from the device
 
@@ -190,6 +242,9 @@ Focus Flow is currently local-first.
 - Text-based PDFs work much better than scanned PDFs
 - Existing imported books do not auto-refresh when parsing logic changes
 - Book workflows are the most advanced path in the app right now
+- Online course imports currently work only for sources that expose public metadata or structured page data
+- Sites protected by JavaScript challenges, anti-bot pages, or login walls may return no course title and no outline
+- Udemy-style share links may require a provider-specific integration beyond the current public-page importer foundation
 
 ## Repository Purpose
 
