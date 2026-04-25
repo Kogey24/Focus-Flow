@@ -18,12 +18,15 @@ import '../../domain/enums/material_type.dart';
 import '../../domain/models/chapter.dart';
 import '../../domain/models/material.dart';
 import 'add_material_state.dart';
+import 'course_import_service.dart';
 
 part 'add_material_notifier.g.dart';
 
 @riverpod
 class AddMaterialNotifier extends _$AddMaterialNotifier {
-  static const MethodChannel _mediaFolderChannel = MethodChannel('focus_flow/media_folder');
+  static const MethodChannel _mediaFolderChannel = MethodChannel(
+    'focus_flow/media_folder',
+  );
   static const int _videoCompressionThresholdBytes = 25 * 1024 * 1024;
   static const int _audioCompressionThresholdBytes = 5 * 1024 * 1024;
   final Uuid _uuid = const Uuid();
@@ -41,6 +44,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       folderIgnoredFilesCount: null,
       chapters: [],
       isSaving: false,
+      isImporting: false,
+      importWarnings: [],
     );
   }
 
@@ -56,15 +61,23 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         chapters: [],
         totalDuration: null,
         totalPages: null,
+        isImporting: false,
+        importError: null,
+        importWarnings: const [],
+        thumbnailPath: null,
+        importerLabel: null,
       ),
     );
   }
 
-  void setTitle(String value) => _patch((current) => current.copyWith(title: value));
+  void setTitle(String value) =>
+      _patch((current) => current.copyWith(title: value));
 
-  void setAuthor(String value) => _patch((current) => current.copyWith(author: value));
+  void setAuthor(String value) =>
+      _patch((current) => current.copyWith(author: value));
 
-  void setSource(String value) => _patch((current) => current.copyWith(source: value));
+  void setSource(String value) =>
+      _patch((current) => current.copyWith(source: value));
 
   void addManualChapter() {
     final current = state.valueOrNull;
@@ -74,7 +87,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       Chapter(
         id: _uuid.v4(),
         materialId: 'pending',
-        title: 'New item ${chapters.length + 1}',
+        title: '${_manualChapterLabel(current.type)} ${chapters.length + 1}',
         orderIndex: chapters.length,
       ),
     );
@@ -94,7 +107,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (current == null || index >= current.chapters.length) return;
     final chapters = [...current.chapters]..removeAt(index);
     final normalized = [
-      for (var i = 0; i < chapters.length; i++) chapters[i].copyWith(orderIndex: i),
+      for (var i = 0; i < chapters.length; i++)
+        chapters[i].copyWith(orderIndex: i),
     ];
     state = AsyncData(current.copyWith(chapters: normalized));
   }
@@ -114,10 +128,14 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     );
     if (result == null || result.files.isEmpty) return;
 
-    final paths = result.files.map((file) => file.path).whereType<String>().toList();
+    final paths = result.files
+        .map((file) => file.path)
+        .whereType<String>()
+        .toList();
     _debugLogBlock([
       '[AddMaterial][files] Selected ${paths.length} ${current.type.label.toLowerCase()} file(s).',
-      for (var i = 0; i < paths.length; i++) '[AddMaterial][files] file[$i]=${paths[i]}',
+      for (var i = 0; i < paths.length; i++)
+        '[AddMaterial][files] file[$i]=${paths[i]}',
     ]);
     await _loadSelectedFiles(
       paths,
@@ -128,7 +146,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
 
   Future<void> pickFolder() async {
     final current = state.valueOrNull;
-    if (current == null || current.type == MaterialType.book || current.type == MaterialType.course) {
+    if (current == null ||
+        current.type == MaterialType.book ||
+        current.type == MaterialType.course) {
       return;
     }
 
@@ -143,13 +163,94 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           selection.files,
           selectedFolderPath: selection.rootPath,
           folderIgnoredFilesCount: selection.ignoredFilesCount,
-          suggestedTitle: current.title.trim().isEmpty ? selection.folderName.filenameLabel() : null,
+          suggestedTitle: current.title.trim().isEmpty
+              ? selection.folderName.filenameLabel()
+              : null,
         );
         return;
       }
     }
 
     await _pickFolderFromFileSystem(current);
+  }
+
+  Future<void> importCourseFromUrl() async {
+    final current = state.valueOrNull;
+    if (current == null || current.type != MaterialType.course) return;
+
+    final rawUrl = current.source.trim();
+    if (rawUrl.isEmpty) {
+      state = AsyncData(
+        current.copyWith(
+          isImporting: false,
+          importError: 'Paste a course URL first.',
+          importWarnings: const [],
+          importerLabel: null,
+        ),
+      );
+      return;
+    }
+
+    state = AsyncData(
+      current.copyWith(
+        isImporting: true,
+        importError: null,
+        importWarnings: const [],
+      ),
+    );
+
+    try {
+      final preview = await ref
+          .read(courseImportServiceProvider)
+          .importFromUrl(rawUrl);
+      final importedChapters = preview.items
+          .asMap()
+          .entries
+          .map(
+            (entry) => Chapter(
+              id: _uuid.v4(),
+              materialId: 'pending',
+              title: entry.value.displayTitle,
+              orderIndex: entry.key,
+              duration: entry.value.durationSeconds,
+              filePath: entry.value.sourceUrl,
+            ),
+          )
+          .toList(growable: false);
+
+      state = AsyncData(
+        current.copyWith(
+          title: current.title.trim().isEmpty ? preview.title : current.title,
+          author: current.author.trim().isEmpty
+              ? (preview.provider ?? current.author)
+              : current.author,
+          source: preview.sourceUrl,
+          chapters: importedChapters.isEmpty
+              ? current.chapters
+              : importedChapters,
+          totalPages: null,
+          totalDuration: importedChapters.isEmpty
+              ? current.totalDuration
+              : preview.totalDuration,
+          isImporting: false,
+          importError: null,
+          importWarnings: preview.warnings,
+          thumbnailPath: preview.thumbnailUrl,
+          importerLabel: preview.importerLabel,
+        ),
+      );
+    } on CourseImportException catch (error) {
+      state = AsyncData(
+        current.copyWith(isImporting: false, importError: error.message),
+      );
+    } catch (_) {
+      state = AsyncData(
+        current.copyWith(
+          isImporting: false,
+          importError: 'The course outline could not be imported right now.',
+        ),
+      );
+    }
   }
 
   Future<String?> save() async {
@@ -171,17 +272,23 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final updatedChapters = [
       for (var i = 0; i < current.chapters.length; i++)
         current.chapters[i].copyWith(
-          id: current.chapters[i].id == 'pending' ? _uuid.v4() : current.chapters[i].id,
+          id: current.chapters[i].id == 'pending'
+              ? _uuid.v4()
+              : current.chapters[i].id,
           materialId: materialId,
           orderIndex: i,
-          filePath: copiedPaths.length > i ? copiedPaths[i] : current.chapters[i].filePath,
+          filePath: copiedPaths.length > i
+              ? copiedPaths[i]
+              : current.chapters[i].filePath,
         ),
     ];
 
     final title = current.title.trim().isEmpty
-        ? (current.selectedPaths.isNotEmpty
-            ? path.basename(current.selectedPaths.first).filenameLabel()
-            : 'Untitled ${current.type.label}')
+        ? (current.type == MaterialType.course
+              ? _fallbackCourseTitle(current.source)
+              : (current.selectedPaths.isNotEmpty
+                    ? path.basename(current.selectedPaths.first).filenameLabel()
+                    : 'Untitled ${current.type.label}'))
         : current.title.trim();
 
     final material = StudyMaterial(
@@ -189,7 +296,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       title: title,
       author: current.author.trim().isEmpty ? null : current.author.trim(),
       type: current.type,
-      filePath: firstFilePath,
+      filePath: current.type == MaterialType.course
+          ? (current.source.trim().isEmpty ? null : current.source.trim())
+          : firstFilePath,
+      thumbnailPath: current.thumbnailPath,
       totalDuration: current.totalDuration,
       totalPages: current.totalPages,
       createdAt: DateTime.now(),
@@ -209,7 +319,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       chapters: updatedChapters,
     );
 
-    _debugLog('[AddMaterial][save] Material saved successfully with id=$materialId.');
+    _debugLog(
+      '[AddMaterial][save] Material saved successfully with id=$materialId.',
+    );
 
     state = const AsyncData(
       AddMaterialState(
@@ -222,6 +334,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         folderIgnoredFilesCount: null,
         chapters: [],
         isSaving: false,
+        isImporting: false,
+        importWarnings: [],
       ),
     );
     return materialId;
@@ -245,7 +359,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       '[AddMaterial][load] Received ${sortedPaths.length} path(s) for ${current.type.label.toLowerCase()}.',
       '[AddMaterial][load] selectedFolderPath=${selectedFolderPath ?? '(none)'}',
       '[AddMaterial][load] ignoredFilesCount=${folderIgnoredFilesCount ?? 0}',
-      for (var i = 0; i < sortedPaths.length; i++) '[AddMaterial][load] input[$i]=${sortedPaths[i]}',
+      for (var i = 0; i < sortedPaths.length; i++)
+        '[AddMaterial][load] input[$i]=${sortedPaths[i]}',
     ]);
 
     if (current.type == MaterialType.book && sortedPaths.isNotEmpty) {
@@ -265,18 +380,22 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         totalDuration: totalDuration,
       );
     } else {
-      chapters = sortedPaths.asMap().entries.map((entry) {
-        return Chapter(
-          id: _uuid.v4(),
-          materialId: 'pending',
-          title: _mediaLabelForPath(
-            filePath: entry.value,
-            selectedFolderPath: selectedFolderPath,
-          ),
-          orderIndex: entry.key,
-          filePath: entry.value,
-        );
-      }).toList(growable: false);
+      chapters = sortedPaths
+          .asMap()
+          .entries
+          .map((entry) {
+            return Chapter(
+              id: _uuid.v4(),
+              materialId: 'pending',
+              title: _mediaLabelForPath(
+                filePath: entry.value,
+                selectedFolderPath: selectedFolderPath,
+              ),
+              orderIndex: entry.key,
+              filePath: entry.value,
+            );
+          })
+          .toList(growable: false);
 
       state = AsyncData(
         current.copyWith(
@@ -287,6 +406,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           chapters: chapters,
           totalPages: null,
           totalDuration: null,
+          importError: null,
+          importWarnings: const [],
+          thumbnailPath: null,
+          importerLabel: null,
         ),
       );
 
@@ -342,6 +465,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         chapters: chapters,
         totalPages: totalPages,
         totalDuration: totalDuration,
+        importError: null,
+        importWarnings: const [],
+        thumbnailPath: null,
+        importerLabel: null,
       ),
     );
   }
@@ -393,6 +520,28 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     state = AsyncData(update(current));
   }
 
+  String _manualChapterLabel(MaterialType type) {
+    return switch (type) {
+      MaterialType.book => 'New chapter',
+      MaterialType.video => 'New episode',
+      MaterialType.audio => 'New track',
+      MaterialType.course => 'New topic',
+    };
+  }
+
+  String _fallbackCourseTitle(String source) {
+    final uri = Uri.tryParse(source.trim());
+    final host = uri?.host.replaceFirst(RegExp(r'^www\.'), '');
+    if (host == null || host.trim().isEmpty) {
+      return 'Untitled Course';
+    }
+    return host
+        .split('.')
+        .first
+        .replaceAll(RegExp(r'[_-]+'), ' ')
+        .toTitleCase();
+  }
+
   String _mediaLabelForPath({
     required String filePath,
     required String? selectedFolderPath,
@@ -402,7 +551,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     }
 
     final relativePath = path.relative(filePath, from: selectedFolderPath);
-    final withoutExtension = relativePath.replaceAll(RegExp(r'\.[A-Za-z0-9]+$'), '');
+    final withoutExtension = relativePath.replaceAll(
+      RegExp(r'\.[A-Za-z0-9]+$'),
+      '',
+    );
     return withoutExtension
         .replaceAll('\\', ' / ')
         .replaceAll('/', ' / ')
@@ -416,23 +568,26 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (allowedExtensions.isEmpty) return null;
 
     try {
-      final result = await _mediaFolderChannel.invokeMapMethod<String, Object?>(
-        'pickMediaFolder',
-        {
-          'allowedExtensions': allowedExtensions,
-          'mediaType': switch (type) {
-            MaterialType.video => 'video',
-            MaterialType.audio => 'audio',
-            _ => '',
-          },
-        },
-      );
+      final result = await _mediaFolderChannel
+          .invokeMapMethod<String, Object?>('pickMediaFolder', {
+            'allowedExtensions': allowedExtensions,
+            'mediaType': switch (type) {
+              MaterialType.video => 'video',
+              MaterialType.audio => 'audio',
+              _ => '',
+            },
+          });
       if (result == null) return null;
 
       final rootPath = result['rootPath'] as String?;
       final folderName = result['folderName'] as String?;
-      final files = (result['files'] as List<Object?>?)?.whereType<String>().toList(growable: false) ?? const [];
-      final ignoredFilesCount = (result['ignoredFilesCount'] as num?)?.toInt() ?? 0;
+      final files =
+          (result['files'] as List<Object?>?)?.whereType<String>().toList(
+            growable: false,
+          ) ??
+          const [];
+      final ignoredFilesCount =
+          (result['ignoredFilesCount'] as num?)?.toInt() ?? 0;
       if (rootPath == null || folderName == null) return null;
 
       _logFolderSelection(
@@ -450,10 +605,14 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         ignoredFilesCount: ignoredFilesCount,
       );
     } on MissingPluginException catch (error) {
-      debugPrint('Media folder channel unavailable, falling back to filesystem scan: $error');
+      debugPrint(
+        'Media folder channel unavailable, falling back to filesystem scan: $error',
+      );
       return null;
     } on PlatformException catch (error) {
-      debugPrint('Media folder channel failed, falling back to filesystem scan: ${error.message}');
+      debugPrint(
+        'Media folder channel failed, falling back to filesystem scan: ${error.message}',
+      );
       return null;
     }
   }
@@ -465,7 +624,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final allowedExtensions = _allowedExtensionsFor(current.type).toSet();
     final files = <File>[];
     var ignoredFilesCount = 0;
-    await for (final entity in Directory(folderPath).list(recursive: true, followLinks: false)) {
+    await for (final entity in Directory(
+      folderPath,
+    ).list(recursive: true, followLinks: false)) {
       if (entity is! File) continue;
       final isSupported = await _matchesMaterialType(
         filePath: entity.path,
@@ -501,8 +662,28 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   List<String> _allowedExtensionsFor(MaterialType type) {
     return switch (type) {
       MaterialType.book => ['pdf', 'docx'],
-      MaterialType.video => ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', '3gp', 'mpeg', 'mpg', 'ts'],
-      MaterialType.audio => ['mp3', 'aac', 'wav', 'm4a', 'flac', 'ogg', 'opus', 'wma'],
+      MaterialType.video => [
+        'mp4',
+        'mkv',
+        'mov',
+        'avi',
+        'webm',
+        'm4v',
+        '3gp',
+        'mpeg',
+        'mpg',
+        'ts',
+      ],
+      MaterialType.audio => [
+        'mp3',
+        'aac',
+        'wav',
+        'm4a',
+        'flac',
+        'ogg',
+        'opus',
+        'wma',
+      ],
       MaterialType.course => const <String>[],
     };
   }
@@ -512,7 +693,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     required MaterialType type,
     required Set<String> allowedExtensions,
   }) async {
-    final extension = path.extension(filePath).replaceFirst('.', '').toLowerCase();
+    final extension = path
+        .extension(filePath)
+        .replaceFirst('.', '')
+        .toLowerCase();
     if (allowedExtensions.contains(extension)) {
       return true;
     }
@@ -520,7 +704,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     try {
       final session = await FFprobeKit.getMediaInformation(filePath);
       final info = session.getMediaInformation();
-      final streamTypes = info
+      final streamTypes =
+          info
               ?.getStreams()
               .map((stream) => stream.getType()?.toLowerCase())
               .whereType<String>()
@@ -528,7 +713,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           const <String>{};
       return switch (type) {
         MaterialType.video => streamTypes.contains('video'),
-        MaterialType.audio => streamTypes.contains('audio') && !streamTypes.contains('video'),
+        MaterialType.audio =>
+          streamTypes.contains('audio') && !streamTypes.contains('video'),
         _ => false,
       };
     } catch (_) {
@@ -594,7 +780,10 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   }) {
     final normalizedDirectory = path.dirname(relativePath);
     final baseName = path.basenameWithoutExtension(relativePath);
-    final originalExtension = path.extension(relativePath).replaceFirst('.', '').toLowerCase();
+    final originalExtension = path
+        .extension(relativePath)
+        .replaceFirst('.', '')
+        .toLowerCase();
     final optimizedExtension = switch (type) {
       MaterialType.video => '.mp4',
       MaterialType.audio => '.m4a',
@@ -649,13 +838,13 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   }) async {
     return switch (type) {
       MaterialType.video => _videoCompressionArguments(
-          sourcePath: sourcePath,
-          destinationPath: destinationPath,
-        ),
+        sourcePath: sourcePath,
+        destinationPath: destinationPath,
+      ),
       MaterialType.audio => _audioCompressionArguments(
-          sourcePath: sourcePath,
-          destinationPath: destinationPath,
-        ),
+        sourcePath: sourcePath,
+        destinationPath: destinationPath,
+      ),
       _ => null,
     };
   }
@@ -713,13 +902,15 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     ];
   }
 
-  Future<({int width, int height})?> _probeVideoDimensions(String filePath) async {
+  Future<({int width, int height})?> _probeVideoDimensions(
+    String filePath,
+  ) async {
     try {
       final session = await FFprobeKit.getMediaInformation(filePath);
       final info = session.getMediaInformation();
       final videoStream = info?.getStreams().firstWhere(
-            (stream) => stream.getType()?.toLowerCase() == 'video',
-          );
+        (stream) => stream.getType()?.toLowerCase() == 'video',
+      );
       final width = videoStream?.getWidth();
       final height = videoStream?.getHeight();
       if (width == null || height == null || width <= 0 || height <= 0) {
@@ -782,7 +973,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       '[AddMaterial][folder][$source] ignoredFiles=$ignoredFilesCount',
       if (files.isEmpty)
         '[AddMaterial][folder][$source] Remark: no supported $lowerType files were found in the selected folder.',
-      for (var i = 0; i < files.length; i++) '[AddMaterial][folder][$source] file[$i]=${files[i]}',
+      for (var i = 0; i < files.length; i++)
+        '[AddMaterial][folder][$source] file[$i]=${files[i]}',
     ]);
   }
 
@@ -803,7 +995,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       '[AddMaterial][structure] ignoredFilesCount=${ignoredFilesCount ?? 0}',
       '[AddMaterial][structure] ${itemLabel}Count=${chapters.length}',
       if (totalPages != null) '[AddMaterial][structure] totalPages=$totalPages',
-      if (totalDuration != null) '[AddMaterial][structure] totalDurationSeconds=$totalDuration',
+      if (totalDuration != null)
+        '[AddMaterial][structure] totalDurationSeconds=$totalDuration',
       if (chapters.isEmpty)
         '[AddMaterial][structure] Remark: no $itemLabel entries were generated from the current selection.',
     ]);
@@ -833,7 +1026,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (chapter.orderIndex < 0) {
       issues.add('order index is negative');
     }
-    if (type != MaterialType.book && (chapter.filePath == null || chapter.filePath!.trim().isEmpty)) {
+    if (type != MaterialType.book &&
+        type != MaterialType.course &&
+        (chapter.filePath == null || chapter.filePath!.trim().isEmpty)) {
       issues.add('media file path is missing');
     }
     if (type == MaterialType.book &&
@@ -844,10 +1039,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     }
 
     if (issues.isNotEmpty) {
-      return (
-        isValid: false,
-        remark: issues.join('; '),
-      );
+      return (isValid: false, remark: issues.join('; '));
     }
 
     final remark = switch (type) {
@@ -855,16 +1047,17 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         'valid chapter: title and order index are set, and page metadata is available',
       MaterialType.book =>
         'valid chapter: title and order index are set; page metadata is optional',
+      MaterialType.course when chapter.duration != null =>
+        'valid course item: title, order index, and duration are available; lesson links are optional',
+      MaterialType.course =>
+        'valid course item: title and order index are set; lesson links and durations are optional',
       _ when chapter.duration != null =>
         'valid media item: title, order index, file path, and duration are available',
       _ =>
         'valid media item: title, order index, and file path are available; duration can remain empty until probing succeeds',
     };
 
-    return (
-      isValid: true,
-      remark: remark,
-    );
+    return (isValid: true, remark: remark);
   }
 
   void _logSavePayload({
@@ -885,7 +1078,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       '[AddMaterial][save] totalDurationSeconds=${material.totalDuration ?? '-'}',
       '[AddMaterial][save] chaptersCount=${chapters.length}',
       '[AddMaterial][save] copiedFilesCount=${copiedPaths.length}',
-      for (var i = 0; i < copiedPaths.length; i++) '[AddMaterial][save] copied[$i]=${copiedPaths[i]}',
+      for (var i = 0; i < copiedPaths.length; i++)
+        '[AddMaterial][save] copied[$i]=${copiedPaths[i]}',
     ]);
 
     for (var i = 0; i < chapters.length; i++) {

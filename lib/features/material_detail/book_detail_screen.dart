@@ -143,6 +143,8 @@ class _BookChapterNodeTile extends StatelessWidget {
     final totalLeaves = tree.leafCount(node.chapter.id);
     final subtitleParts = <String>[
       if (totalLeaves > 0) '$completedLeaves / $totalLeaves complete',
+      if (_totalDurationLabel(node.chapter.id) != null)
+        _totalDurationLabel(node.chapter.id)!,
       if (_pageRange(node.chapter) != null) _pageRange(node.chapter)!,
     ];
 
@@ -197,15 +199,50 @@ class _BookChapterNodeTile extends StatelessWidget {
 
   String? _leafSubtitle(Chapter chapter) {
     final pageRange = _pageRange(chapter);
-    if (pageRange != null && (chapter.note ?? '').trim().isNotEmpty) {
-      return '$pageRange - ${chapter.note}';
+    final durationLabel = _durationLabel(chapter.duration);
+    final detail = durationLabel ?? pageRange;
+
+    if (detail != null && (chapter.note ?? '').trim().isNotEmpty) {
+      return '$detail - ${chapter.note}';
     }
-    return pageRange ?? chapter.note;
+    return detail ?? chapter.note;
   }
 
   String? _pageRange(Chapter chapter) {
     if (chapter.pageStart == null) return null;
     return 'Pages ${chapter.pageStart}-${chapter.pageEnd ?? chapter.pageStart}';
+  }
+
+  String? _totalDurationLabel(String chapterId) {
+    final leaves = tree.leafDescendantsOf(chapterId);
+    var total = 0;
+    var hasAnyDuration = false;
+    for (final leaf in leaves) {
+      if (leaf.duration == null) continue;
+      total += leaf.duration!;
+      hasAnyDuration = true;
+    }
+    if (!hasAnyDuration) return null;
+    return _durationLabel(total);
+  }
+
+  String? _durationLabel(int? seconds) {
+    if (seconds == null || seconds <= 0) return null;
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    final remainingSeconds = seconds % 60;
+
+    if (hours > 0) {
+      return remainingSeconds == 0
+          ? '${hours}h ${minutes}m'
+          : '${hours}h ${minutes}m ${remainingSeconds}s';
+    }
+    if (minutes > 0) {
+      return remainingSeconds == 0
+          ? '${minutes}m'
+          : '${minutes}m ${remainingSeconds}s';
+    }
+    return '${remainingSeconds}s';
   }
 }
 
@@ -244,6 +281,17 @@ class _MaterialDetailShell extends StatelessWidget {
                 if ((material.author ?? '').isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(material.author!),
+                ],
+                if ((material.filePath ?? '').startsWith('http')) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    material.filePath!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                 ],
                 const SizedBox(height: 12),
                 ProgressBar(value: material.progress, type: material.type),

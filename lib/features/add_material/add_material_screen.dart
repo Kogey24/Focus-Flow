@@ -14,11 +14,36 @@ import '../library/library_notifier.dart';
 import 'add_material_notifier.dart';
 import 'add_material_state.dart';
 
-class AddMaterialScreen extends ConsumerWidget {
+class AddMaterialScreen extends ConsumerStatefulWidget {
   const AddMaterialScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AddMaterialScreen> createState() => _AddMaterialScreenState();
+}
+
+class _AddMaterialScreenState extends ConsumerState<AddMaterialScreen> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _authorController;
+  late final TextEditingController _sourceController;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController();
+    _authorController = TextEditingController();
+    _sourceController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _authorController.dispose();
+    _sourceController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(addMaterialNotifierProvider);
     final notifier = ref.read(addMaterialNotifierProvider.notifier);
 
@@ -40,17 +65,22 @@ class AddMaterialScreen extends ConsumerWidget {
         padding: const EdgeInsets.all(AppDimensions.spacing16),
         child: state.when(
           data: (addState) {
+            _syncController(_titleController, addState.title);
+            _syncController(_authorController, addState.author);
+            _syncController(_sourceController, addState.source);
+
             final chapterTree = ChapterTree.fromChapters(addState.chapters);
             final chapterIndexById = <String, int>{
-              for (final entry in addState.chapters.asMap().entries) entry.value.id: entry.key,
+              for (final entry in addState.chapters.asMap().entries)
+                entry.value.id: entry.key,
             };
             return ListView(
               children: [
                 Text(
                   'Type',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 FilterChipRow<study.MaterialType>(
@@ -67,10 +97,15 @@ class AddMaterialScreen extends ConsumerWidget {
                         child: FilledButton.tonalIcon(
                           onPressed: notifier.pickFiles,
                           icon: const Icon(Icons.upload_file_rounded),
-                          label: Text(addState.type == study.MaterialType.book ? 'Upload file' : 'Pick files'),
+                          label: Text(
+                            addState.type == study.MaterialType.book
+                                ? 'Upload file'
+                                : 'Pick files',
+                          ),
                         ),
                       ),
-                      if (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio) ...[
+                      if (addState.type == study.MaterialType.video ||
+                          addState.type == study.MaterialType.audio) ...[
                         const SizedBox(width: 12),
                         Expanded(
                           child: FilledButton.tonalIcon(
@@ -85,23 +120,90 @@ class AddMaterialScreen extends ConsumerWidget {
                   const SizedBox(height: 12),
                 ],
                 TextField(
+                  controller: _titleController,
                   decoration: const InputDecoration(labelText: 'Title'),
                   onChanged: notifier.setTitle,
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  decoration: InputDecoration(
-                    labelText: addState.type == study.MaterialType.course ? 'Source / URL / description' : 'Author / source',
+                if (addState.type == study.MaterialType.course) ...[
+                  TextField(
+                    controller: _sourceController,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: 'Course URL',
+                      hintText:
+                          'https://www.udemy.com/... or another public course page',
+                    ),
+                    onChanged: notifier.setSource,
                   ),
-                  onChanged: (value) {
-                    notifier.setAuthor(value);
-                    if (addState.type == study.MaterialType.course) {
-                      notifier.setSource(value);
-                    }
-                  },
-                ),
+                  const SizedBox(height: 12),
+                  FilledButton.tonalIcon(
+                    onPressed: addState.isImporting
+                        ? null
+                        : notifier.importCourseFromUrl,
+                    icon: Icon(
+                      addState.isImporting
+                          ? Icons.sync_rounded
+                          : Icons.travel_explore_rounded,
+                    ),
+                    label: Text(
+                      addState.isImporting
+                          ? 'Fetching outline...'
+                          : 'Fetch outline',
+                    ),
+                  ),
+                  if (addState.importerLabel != null ||
+                      addState.chapters.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.cloud_done_rounded),
+                        title: Text(
+                          addState.importerLabel == null
+                              ? 'Course data ready'
+                              : 'Imported with ${addState.importerLabel}',
+                        ),
+                        subtitle: Text(_courseImportSummary(addState)),
+                      ),
+                    ),
+                  ],
+                  if (addState.importError != null) ...[
+                    const SizedBox(height: 12),
+                    _MessageCard(
+                      icon: Icons.error_outline_rounded,
+                      message: addState.importError!,
+                      color: Theme.of(context).colorScheme.errorContainer,
+                    ),
+                  ],
+                  if (addState.importWarnings.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _MessageCard(
+                      icon: Icons.info_outline_rounded,
+                      message: addState.importWarnings.join('\n'),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _authorController,
+                    decoration: const InputDecoration(
+                      labelText: 'Provider / instructor / note',
+                    ),
+                    onChanged: notifier.setAuthor,
+                  ),
+                ] else
+                  TextField(
+                    controller: _authorController,
+                    decoration: const InputDecoration(
+                      labelText: 'Author / source',
+                    ),
+                    onChanged: notifier.setAuthor,
+                  ),
                 if (addState.selectedFolderPath != null &&
-                    (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)) ...[
+                    (addState.type == study.MaterialType.video ||
+                        addState.type == study.MaterialType.audio)) ...[
                   const SizedBox(height: 16),
                   Card(
                     child: ListTile(
@@ -111,105 +213,108 @@ class AddMaterialScreen extends ConsumerWidget {
                     ),
                   ),
                 ],
-                if (addState.type != study.MaterialType.course) ...[
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        addState.type == study.MaterialType.book ? 'Chapters' : 'Episodes / tracks',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _structureTitle(addState.type),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
-                      TextButton.icon(
-                        onPressed: notifier.addManualChapter,
-                        icon: const Icon(Icons.add_rounded),
-                        label: const Text('Add manual'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (addState.chapters.isEmpty)
-                    EmptyStateWidget(
-                      title: addState.selectedFolderPath != null &&
-                              (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)
-                          ? 'No supported files found'
-                          : 'No structure yet',
-                      message: addState.selectedFolderPath != null &&
-                              (addState.type == study.MaterialType.video || addState.type == study.MaterialType.audio)
-                          ? _emptyFolderMessage(addState)
-                          : 'Upload a file or add manual chapters to shape the material.',
-                      icon: addState.selectedFolderPath != null
-                          ? Icons.folder_off_rounded
-                          : Icons.list_alt_rounded,
-                    )
-                  else if (addState.type == study.MaterialType.book)
-                    Theme(
-                      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                      child: Column(
-                        children: chapterTree.roots
-                            .map(
-                              (node) => Padding(
-                                padding: const EdgeInsets.only(bottom: 10),
-                                child: _BookStructureNodeEditor(
-                                  node: node,
-                                  chapterTree: chapterTree,
-                                  chapterIndexById: chapterIndexById,
-                                  onTitleChanged: (chapterId, title) {
-                                    final index = chapterIndexById[chapterId];
-                                    if (index == null) return;
-                                    notifier.updateChapterTitle(index, title);
-                                  },
-                                  onRemove: (chapterId) {
-                                    final index = chapterIndexById[chapterId];
-                                    if (index == null) return;
-                                    notifier.removeChapter(index);
-                                  },
-                                ),
+                    ),
+                    TextButton.icon(
+                      onPressed: notifier.addManualChapter,
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('Add manual'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (addState.chapters.isEmpty)
+                  EmptyStateWidget(
+                    title: _emptyStructureTitle(addState),
+                    message: _emptyStructureMessage(addState),
+                    icon: _emptyStructureIcon(addState),
+                  )
+                else if (addState.type == study.MaterialType.book)
+                  Theme(
+                    data: Theme.of(
+                      context,
+                    ).copyWith(dividerColor: Colors.transparent),
+                    child: Column(
+                      children: chapterTree.roots
+                          .map(
+                            (node) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _BookStructureNodeEditor(
+                                node: node,
+                                chapterTree: chapterTree,
+                                chapterIndexById: chapterIndexById,
+                                onTitleChanged: (chapterId, title) {
+                                  final index = chapterIndexById[chapterId];
+                                  if (index == null) return;
+                                  notifier.updateChapterTitle(index, title);
+                                },
+                                onRemove: (chapterId) {
+                                  final index = chapterIndexById[chapterId];
+                                  if (index == null) return;
+                                  notifier.removeChapter(index);
+                                },
                               ),
-                            )
-                            .toList(growable: false),
-                      ),
-                    )
-                  else
-                    ...addState.chapters.asMap().entries.map(
-                      (entry) => Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: Card(
-                          child: ListTile(
-                            leading: CircleAvatar(child: Text('${entry.key + 1}')),
-                            title: TextFormField(
-                              initialValue: entry.value.title,
-                              decoration: const InputDecoration(border: InputBorder.none),
-                              onChanged: (value) => notifier.updateChapterTitle(entry.key, value),
                             ),
-                            subtitle: entry.value.duration == null
-                                ? (entry.value.pageStart == null
+                          )
+                          .toList(growable: false),
+                    ),
+                  )
+                else
+                  ...addState.chapters.asMap().entries.map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Card(
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            child: Text('${entry.key + 1}'),
+                          ),
+                          title: TextFormField(
+                            initialValue: entry.value.title,
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                            ),
+                            onChanged: (value) =>
+                                notifier.updateChapterTitle(entry.key, value),
+                          ),
+                          subtitle: entry.value.duration == null
+                              ? (entry.value.pageStart == null
                                     ? null
-                                    : Text('Pages ${entry.value.pageStart}-${entry.value.pageEnd ?? entry.value.pageStart}'))
-                                : Text('${entry.value.duration} seconds'),
-                            trailing: IconButton(
-                              onPressed: () => notifier.removeChapter(entry.key),
-                              icon: const Icon(Icons.close_rounded),
-                            ),
+                                    : Text(
+                                        'Pages ${entry.value.pageStart}-${entry.value.pageEnd ?? entry.value.pageStart}',
+                                      ))
+                              : Text('${entry.value.duration} seconds'),
+                          trailing: IconButton(
+                            onPressed: () => notifier.removeChapter(entry.key),
+                            icon: const Icon(Icons.close_rounded),
                           ),
                         ),
                       ),
                     ),
-                ],
+                  ),
                 const SizedBox(height: 24),
                 FilledButton(
-                  onPressed: addState.isSaving
+                  onPressed: addState.isSaving || addState.isImporting
                       ? null
                       : () async {
-                          final materialId = await ref.read(addMaterialNotifierProvider.notifier).save();
+                          final materialId = await ref
+                              .read(addMaterialNotifierProvider.notifier)
+                              .save();
                           if (materialId == null || !context.mounted) return;
                           ref.invalidate(libraryNotifierProvider);
                           ref.invalidate(homeNotifierProvider);
                           context.go('/library/$materialId');
                         },
-                  child: Text(addState.isSaving ? 'Saving...' : 'Add to library'),
+                  child: Text(
+                    addState.isSaving ? 'Saving...' : 'Add to library',
+                  ),
                 ),
               ],
             );
@@ -226,12 +331,25 @@ class AddMaterialScreen extends ConsumerWidget {
     );
   }
 
+  void _syncController(TextEditingController controller, String value) {
+    if (controller.text == value) return;
+    controller.value = controller.value.copyWith(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+      composing: TextRange.empty,
+    );
+  }
+
   String _folderSummaryMessage(AddMaterialState addState) {
     final materialLabel = addState.type.label.toLowerCase();
     final supportedCount = addState.selectedPaths.length;
     final ignoredCount = addState.folderIgnoredFilesCount ?? 0;
-    final supportedLabel = supportedCount == 1 ? '$materialLabel file' : '$materialLabel files';
-    final ignoredLabel = ignoredCount == 1 ? '1 unsupported file' : '$ignoredCount unsupported files';
+    final supportedLabel = supportedCount == 1
+        ? '$materialLabel file'
+        : '$materialLabel files';
+    final ignoredLabel = ignoredCount == 1
+        ? '1 unsupported file'
+        : '$ignoredCount unsupported files';
 
     if (supportedCount == 0 && ignoredCount == 0) {
       return 'No files were found in the selected folder.';
@@ -251,8 +369,91 @@ class AddMaterialScreen extends ConsumerWidget {
     if (ignoredCount == 0) {
       return 'The selected folder does not contain any files.';
     }
-    final ignoredLabel = ignoredCount == 1 ? '1 unsupported file' : '$ignoredCount unsupported files';
+    final ignoredLabel = ignoredCount == 1
+        ? '1 unsupported file'
+        : '$ignoredCount unsupported files';
     return 'The selected folder does not contain supported $materialLabel files. It ignored $ignoredLabel.';
+  }
+
+  String _structureTitle(study.MaterialType type) {
+    return switch (type) {
+      study.MaterialType.book => 'Chapters',
+      study.MaterialType.video => 'Episodes',
+      study.MaterialType.audio => 'Tracks',
+      study.MaterialType.course => 'Topics / episodes',
+    };
+  }
+
+  String _emptyStructureTitle(AddMaterialState addState) {
+    if (addState.type == study.MaterialType.course) {
+      return 'No course outline yet';
+    }
+    if (addState.selectedFolderPath != null &&
+        (addState.type == study.MaterialType.video ||
+            addState.type == study.MaterialType.audio)) {
+      return 'No supported files found';
+    }
+    return 'No structure yet';
+  }
+
+  String _emptyStructureMessage(AddMaterialState addState) {
+    if (addState.type == study.MaterialType.course) {
+      return 'Paste a course URL and fetch the outline, or add manual topics to build it yourself.';
+    }
+    if (addState.selectedFolderPath != null &&
+        (addState.type == study.MaterialType.video ||
+            addState.type == study.MaterialType.audio)) {
+      return _emptyFolderMessage(addState);
+    }
+    return 'Upload a file or add manual chapters to shape the material.';
+  }
+
+  IconData _emptyStructureIcon(AddMaterialState addState) {
+    if (addState.type == study.MaterialType.course) {
+      return Icons.travel_explore_rounded;
+    }
+    return addState.selectedFolderPath != null
+        ? Icons.folder_off_rounded
+        : Icons.list_alt_rounded;
+  }
+
+  String _courseImportSummary(AddMaterialState addState) {
+    final itemCount = addState.chapters.length;
+    final itemLabel = itemCount == 1 ? '1 topic' : '$itemCount topics';
+    if (addState.totalDuration == null) {
+      return 'Prepared $itemLabel from ${addState.source}.';
+    }
+    return 'Prepared $itemLabel with ${addState.totalDuration} seconds total.';
+  }
+}
+
+class _MessageCard extends StatelessWidget {
+  const _MessageCard({
+    required this.icon,
+    required this.message,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String message;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: color,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -361,7 +562,9 @@ class _BookStructureNodeEditor extends StatelessWidget {
     required int descendantCount,
   }) {
     final pageLabel = _pageLabel(chapter.pageStart, chapter.pageEnd);
-    final countLabel = descendantCount == 1 ? '1 nested item' : '$descendantCount nested items';
+    final countLabel = descendantCount == 1
+        ? '1 nested item'
+        : '$descendantCount nested items';
     return pageLabel == null ? countLabel : '$countLabel  -  $pageLabel';
   }
 
