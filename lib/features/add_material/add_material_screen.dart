@@ -46,6 +46,29 @@ class _AddMaterialScreenState extends ConsumerState<AddMaterialScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(addMaterialNotifierProvider);
     final notifier = ref.read(addMaterialNotifierProvider.notifier);
+    final addState = state.valueOrNull;
+
+    ref.listen<AsyncValue<AddMaterialState>>(addMaterialNotifierProvider, (
+      previous,
+      next,
+    ) {
+      final previousState = previous?.valueOrNull;
+      final nextState = next.valueOrNull;
+      final nextError = nextState?.saveError;
+      if (nextError == null || nextError == previousState?.saveError) return;
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(nextError),
+            backgroundColor: nextState?.isStorageFull == true
+                ? Theme.of(context).colorScheme.error
+                : null,
+          ),
+        );
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -61,272 +84,326 @@ class _AddMaterialScreenState extends ConsumerState<AddMaterialScreen> {
         ),
         title: const Text('Add material'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(AppDimensions.spacing16),
-        child: state.when(
-          data: (addState) {
-            _syncController(_titleController, addState.title);
-            _syncController(_authorController, addState.author);
-            _syncController(_sourceController, addState.source);
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(AppDimensions.spacing16),
+            child: state.when(
+              data: (addState) {
+                _syncController(_titleController, addState.title);
+                _syncController(_authorController, addState.author);
+                _syncController(_sourceController, addState.source);
 
-            final chapterTree = ChapterTree.fromChapters(addState.chapters);
-            final chapterIndexById = <String, int>{
-              for (final entry in addState.chapters.asMap().entries)
-                entry.value.id: entry.key,
-            };
-            return ListView(
-              children: [
-                Text(
-                  'Type',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilterChipRow<study.MaterialType>(
-                  values: study.MaterialType.values,
-                  selected: addState.type,
-                  labelBuilder: (type) => type.label,
-                  onSelected: notifier.setType,
-                ),
-                const SizedBox(height: 20),
-                if (addState.type != study.MaterialType.course) ...[
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.tonalIcon(
-                          onPressed: notifier.pickFiles,
-                          icon: const Icon(Icons.upload_file_rounded),
-                          label: Text(
-                            addState.type == study.MaterialType.book
-                                ? 'Upload file'
-                                : 'Pick files',
-                          ),
-                        ),
-                      ),
-                      if (addState.type == study.MaterialType.video ||
-                          addState.type == study.MaterialType.audio) ...[
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: FilledButton.tonalIcon(
-                            onPressed: notifier.pickFolder,
-                            icon: const Icon(Icons.folder_open_rounded),
-                            label: const Text('Pick folder'),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                TextField(
-                  controller: _titleController,
-                  decoration: const InputDecoration(labelText: 'Title'),
-                  onChanged: notifier.setTitle,
-                ),
-                const SizedBox(height: 12),
-                if (addState.type == study.MaterialType.course) ...[
-                  TextField(
-                    controller: _sourceController,
-                    keyboardType: TextInputType.url,
-                    decoration: const InputDecoration(
-                      labelText: 'Course URL',
-                      hintText:
-                          'https://www.udemy.com/... or another public course page',
-                    ),
-                    onChanged: notifier.setSource,
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.tonalIcon(
-                    onPressed: addState.isImporting
-                        ? null
-                        : notifier.importCourseFromUrl,
-                    icon: Icon(
-                      addState.isImporting
-                          ? Icons.sync_rounded
-                          : Icons.travel_explore_rounded,
-                    ),
-                    label: Text(
-                      addState.isImporting
-                          ? 'Fetching outline...'
-                          : 'Fetch outline',
-                    ),
-                  ),
-                  if (addState.importerLabel != null ||
-                      addState.chapters.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.cloud_done_rounded),
-                        title: Text(
-                          addState.importerLabel == null
-                              ? 'Course data ready'
-                              : 'Imported with ${addState.importerLabel}',
-                        ),
-                        subtitle: Text(_courseImportSummary(addState)),
-                      ),
-                    ),
-                  ],
-                  if (addState.importError != null) ...[
-                    const SizedBox(height: 12),
-                    _MessageCard(
-                      icon: Icons.error_outline_rounded,
-                      message: addState.importError!,
-                      color: Theme.of(context).colorScheme.errorContainer,
-                    ),
-                  ],
-                  if (addState.importWarnings.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _MessageCard(
-                      icon: Icons.info_outline_rounded,
-                      message: addState.importWarnings.join('\n'),
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.surfaceContainerHighest,
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _authorController,
-                    decoration: const InputDecoration(
-                      labelText: 'Provider / instructor / note',
-                    ),
-                    onChanged: notifier.setAuthor,
-                  ),
-                ] else
-                  TextField(
-                    controller: _authorController,
-                    decoration: const InputDecoration(
-                      labelText: 'Author / source',
-                    ),
-                    onChanged: notifier.setAuthor,
-                  ),
-                if (addState.selectedFolderPath != null &&
-                    (addState.type == study.MaterialType.video ||
-                        addState.type == study.MaterialType.audio)) ...[
-                  const SizedBox(height: 16),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.folder_open_rounded),
-                      title: Text(path.basename(addState.selectedFolderPath!)),
-                      subtitle: Text(_folderSummaryMessage(addState)),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                final chapterTree = ChapterTree.fromChapters(addState.chapters);
+                final chapterIndexById = <String, int>{
+                  for (final entry in addState.chapters.asMap().entries)
+                    entry.value.id: entry.key,
+                };
+                return ListView(
                   children: [
                     Text(
-                      _structureTitle(addState.type),
+                      'Type',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    TextButton.icon(
-                      onPressed: notifier.addManualChapter,
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('Add manual'),
+                    const SizedBox(height: 12),
+                    FilterChipRow<study.MaterialType>(
+                      values: study.MaterialType.values,
+                      selected: addState.type,
+                      labelBuilder: (type) => type.label,
+                      onSelected: notifier.setType,
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (addState.chapters.isEmpty)
-                  EmptyStateWidget(
-                    title: _emptyStructureTitle(addState),
-                    message: _emptyStructureMessage(addState),
-                    icon: _emptyStructureIcon(addState),
-                  )
-                else if (addState.type == study.MaterialType.book)
-                  Theme(
-                    data: Theme.of(
-                      context,
-                    ).copyWith(dividerColor: Colors.transparent),
-                    child: Column(
-                      children: chapterTree.roots
-                          .map(
-                            (node) => Padding(
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: _BookStructureNodeEditor(
-                                node: node,
-                                chapterTree: chapterTree,
-                                chapterIndexById: chapterIndexById,
-                                onTitleChanged: (chapterId, title) {
-                                  final index = chapterIndexById[chapterId];
-                                  if (index == null) return;
-                                  notifier.updateChapterTitle(index, title);
-                                },
-                                onRemove: (chapterId) {
-                                  final index = chapterIndexById[chapterId];
-                                  if (index == null) return;
-                                  notifier.removeChapter(index);
-                                },
+                    const SizedBox(height: 20),
+                    if (addState.type != study.MaterialType.course) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: notifier.pickFiles,
+                              icon: const Icon(Icons.upload_file_rounded),
+                              label: Text(
+                                addState.type == study.MaterialType.book
+                                    ? 'Upload file'
+                                    : 'Pick files',
                               ),
                             ),
-                          )
-                          .toList(growable: false),
-                    ),
-                  )
-                else
-                  ...addState.chapters.asMap().entries.map(
-                    (entry) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Card(
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            child: Text('${entry.key + 1}'),
                           ),
-                          title: TextFormField(
-                            initialValue: entry.value.title,
-                            decoration: const InputDecoration(
-                              border: InputBorder.none,
+                          if (addState.type == study.MaterialType.video ||
+                              addState.type == study.MaterialType.audio) ...[
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: FilledButton.tonalIcon(
+                                onPressed: notifier.pickFolder,
+                                icon: const Icon(Icons.folder_open_rounded),
+                                label: const Text('Pick folder'),
+                              ),
                             ),
-                            onChanged: (value) =>
-                                notifier.updateChapterTitle(entry.key, value),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    TextField(
+                      controller: _titleController,
+                      decoration: const InputDecoration(labelText: 'Title'),
+                      onChanged: notifier.setTitle,
+                    ),
+                    const SizedBox(height: 12),
+                    if (addState.type == study.MaterialType.course) ...[
+                      TextField(
+                        controller: _sourceController,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(
+                          labelText: 'Course URL',
+                          hintText:
+                              'https://www.udemy.com/... or another public course page',
+                        ),
+                        onChanged: notifier.setSource,
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton.tonalIcon(
+                        onPressed: addState.isImporting
+                            ? null
+                            : notifier.importCourseFromUrl,
+                        icon: Icon(
+                          addState.isImporting
+                              ? Icons.sync_rounded
+                              : Icons.travel_explore_rounded,
+                        ),
+                        label: Text(
+                          addState.isImporting
+                              ? 'Fetching outline...'
+                              : 'Fetch outline',
+                        ),
+                      ),
+                      if (addState.importerLabel != null ||
+                          addState.chapters.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Card(
+                          child: ListTile(
+                            leading: const Icon(Icons.cloud_done_rounded),
+                            title: Text(
+                              addState.importerLabel == null
+                                  ? 'Course data ready'
+                                  : 'Imported with ${addState.importerLabel}',
+                            ),
+                            subtitle: Text(_courseImportSummary(addState)),
                           ),
-                          subtitle: entry.value.duration == null
-                              ? (entry.value.pageStart == null
-                                    ? null
-                                    : Text(
-                                        'Pages ${entry.value.pageStart}-${entry.value.pageEnd ?? entry.value.pageStart}',
-                                      ))
-                              : Text('${entry.value.duration} seconds'),
-                          trailing: IconButton(
-                            onPressed: () => notifier.removeChapter(entry.key),
-                            icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                      if (addState.importError != null) ...[
+                        const SizedBox(height: 12),
+                        _MessageCard(
+                          icon: Icons.error_outline_rounded,
+                          message: addState.importError!,
+                          color: Theme.of(context).colorScheme.errorContainer,
+                        ),
+                      ],
+                      if (addState.importWarnings.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _MessageCard(
+                          icon: Icons.info_outline_rounded,
+                          message: addState.importWarnings.join('\n'),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.surfaceContainerHighest,
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _authorController,
+                        decoration: const InputDecoration(
+                          labelText: 'Provider / instructor / note',
+                        ),
+                        onChanged: notifier.setAuthor,
+                      ),
+                    ] else
+                      TextField(
+                        controller: _authorController,
+                        decoration: const InputDecoration(
+                          labelText: 'Author / source',
+                        ),
+                        onChanged: notifier.setAuthor,
+                      ),
+                    if (addState.selectedPaths.isNotEmpty &&
+                        addState.selectedFolderPath == null &&
+                        addState.type != study.MaterialType.course) ...[
+                      const SizedBox(height: 16),
+                      Card(
+                        child: ListTile(
+                          leading: const Icon(Icons.insert_drive_file_rounded),
+                          title: Text(_selectedFileHeadline(addState)),
+                          subtitle: Text(_selectedFileSummary(addState)),
+                        ),
+                      ),
+                    ],
+                    if (addState.selectedFolderPath != null &&
+                        (addState.type == study.MaterialType.video ||
+                            addState.type == study.MaterialType.audio)) ...[
+                      const SizedBox(height: 16),
+                      Card(
+                        child: ListTile(
+                          leading: const Icon(Icons.folder_open_rounded),
+                          title: Text(
+                            path.basename(addState.selectedFolderPath!),
+                          ),
+                          subtitle: Text(_folderSummaryMessage(addState)),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          _structureTitle(addState.type),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        TextButton.icon(
+                          onPressed: notifier.addManualChapter,
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Add manual'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (addState.chapters.isEmpty)
+                      EmptyStateWidget(
+                        title: _emptyStructureTitle(addState),
+                        message: _emptyStructureMessage(addState),
+                        icon: _emptyStructureIcon(addState),
+                      )
+                    else if (addState.type == study.MaterialType.book)
+                      Theme(
+                        data: Theme.of(
+                          context,
+                        ).copyWith(dividerColor: Colors.transparent),
+                        child: Column(
+                          children: chapterTree.roots
+                              .map(
+                                (node) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: _BookStructureNodeEditor(
+                                    node: node,
+                                    chapterTree: chapterTree,
+                                    chapterIndexById: chapterIndexById,
+                                    onTitleChanged: (chapterId, title) {
+                                      final index = chapterIndexById[chapterId];
+                                      if (index == null) return;
+                                      notifier.updateChapterTitle(index, title);
+                                    },
+                                    onRemove: (chapterId) {
+                                      final index = chapterIndexById[chapterId];
+                                      if (index == null) return;
+                                      notifier.removeChapter(index);
+                                    },
+                                  ),
+                                ),
+                              )
+                              .toList(growable: false),
+                        ),
+                      )
+                    else
+                      ...addState.chapters.asMap().entries.map(
+                        (entry) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Card(
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                child: Text('${entry.key + 1}'),
+                              ),
+                              title: TextFormField(
+                                initialValue: entry.value.title,
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                ),
+                                onChanged: (value) => notifier
+                                    .updateChapterTitle(entry.key, value),
+                              ),
+                              subtitle: entry.value.duration == null
+                                  ? (entry.value.pageStart == null
+                                        ? null
+                                        : Text(
+                                            'Pages ${entry.value.pageStart}-${entry.value.pageEnd ?? entry.value.pageStart}',
+                                          ))
+                                  : Text('${entry.value.duration} seconds'),
+                              trailing: IconButton(
+                                onPressed: () =>
+                                    notifier.removeChapter(entry.key),
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            ),
                           ),
                         ),
                       ),
+                    const SizedBox(height: 24),
+                    if (addState.saveError != null) ...[
+                      _MessageCard(
+                        icon: addState.isStorageFull
+                            ? Icons.sd_storage_rounded
+                            : Icons.error_outline_rounded,
+                        message: addState.saveError!,
+                        color: Theme.of(context).colorScheme.errorContainer,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    FilledButton(
+                      onPressed: addState.isSaving || addState.isImporting
+                          ? null
+                          : () async {
+                              final materialId = await ref
+                                  .read(addMaterialNotifierProvider.notifier)
+                                  .save();
+                              if (materialId == null || !context.mounted) {
+                                return;
+                              }
+                              ref.invalidate(libraryNotifierProvider);
+                              ref.invalidate(homeNotifierProvider);
+                              context.go('/library/$materialId');
+                            },
+                      child: Text(
+                        addState.isSaving ? 'Saving...' : 'Add to library',
+                      ),
                     ),
-                  ),
-                const SizedBox(height: 24),
-                FilledButton(
-                  onPressed: addState.isSaving || addState.isImporting
-                      ? null
-                      : () async {
-                          final materialId = await ref
-                              .read(addMaterialNotifierProvider.notifier)
-                              .save();
-                          if (materialId == null || !context.mounted) return;
-                          ref.invalidate(libraryNotifierProvider);
-                          ref.invalidate(homeNotifierProvider);
-                          context.go('/library/$materialId');
-                        },
-                  child: Text(
-                    addState.isSaving ? 'Saving...' : 'Add to library',
-                  ),
-                ),
-              ],
-            );
-          },
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, _) => EmptyStateWidget(
-            title: 'Add material failed',
-            message: '$error',
-            ctaLabel: 'Retry',
-            onPressed: () => ref.invalidate(addMaterialNotifierProvider),
+                  ],
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, _) => EmptyStateWidget(
+                title: 'Add material failed',
+                message: '$error',
+                ctaLabel: 'Retry',
+                onPressed: () => ref.invalidate(addMaterialNotifierProvider),
+              ),
+            ),
           ),
-        ),
+          if (addState?.isSaving == true) ...[
+            const ModalBarrier(dismissible: false, color: Color(0x66000000)),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: _UploadProgressModal(
+                  progress: addState!.uploadProgress,
+                  status: addState.uploadStatus ?? 'Uploading material...',
+                ),
+              ),
+            ),
+          ] else if (addState?.isPreparingSelection == true) ...[
+            const ModalBarrier(dismissible: false, color: Color(0x66000000)),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: _SelectionProgressModal(
+                  status:
+                      addState!.selectionStatus ??
+                      'Preparing the selected material...',
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -361,6 +438,27 @@ class _AddMaterialScreenState extends ConsumerState<AddMaterialScreen> {
       return 'Found $supportedCount supported $supportedLabel ready to import.';
     }
     return 'Found $supportedCount supported $supportedLabel ready to import and ignored $ignoredLabel.';
+  }
+
+  String _selectedFileHeadline(AddMaterialState addState) {
+    if (addState.selectedPaths.length == 1) {
+      return path.basename(addState.selectedPaths.first);
+    }
+    final itemLabel = switch (addState.type) {
+      study.MaterialType.book => 'files',
+      study.MaterialType.video => 'video files',
+      study.MaterialType.audio => 'audio files',
+      study.MaterialType.course => 'items',
+    };
+    return '${addState.selectedPaths.length} $itemLabel selected';
+  }
+
+  String _selectedFileSummary(AddMaterialState addState) {
+    if (addState.selectedPaths.length == 1) {
+      return '1 file selected. Tap Add to library to start the upload.';
+    }
+    final firstFile = path.basename(addState.selectedPaths.first);
+    return 'Selected ${addState.selectedPaths.length} files. First file: $firstFile. Tap Add to library to start the upload.';
   }
 
   String _emptyFolderMessage(AddMaterialState addState) {
@@ -451,6 +549,98 @@ class _MessageCard extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(child: Text(message)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _UploadProgressModal extends StatelessWidget {
+  const _UploadProgressModal({required this.progress, required this.status});
+
+  final double progress;
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final percentLabel = '${(progress * 100).round()}%';
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 380),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.cloud_upload_rounded),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Uploading material',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    percentLabel,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              LinearProgressIndicator(value: progress.clamp(0, 1).toDouble()),
+              const SizedBox(height: 12),
+              Text(status),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectionProgressModal extends StatelessWidget {
+  const _SelectionProgressModal({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 380),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.sync_rounded),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Preparing material',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const LinearProgressIndicator(),
+              const SizedBox(height: 12),
+              Text(status),
+            ],
+          ),
         ),
       ),
     );

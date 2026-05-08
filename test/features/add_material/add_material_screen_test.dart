@@ -104,6 +104,80 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'shows an upload progress modal while a material is being saved',
+    (tester) async {
+      final state = AddMaterialState(
+        type: study.MaterialType.book,
+        title: 'Signals Handbook',
+        author: '',
+        source: '',
+        selectedPaths: const [r'C:\imports\signals.pdf'],
+        chapters: const [],
+        isSaving: true,
+        isImporting: false,
+        uploadProgress: 0.42,
+        uploadStatus: 'Uploading material...',
+      );
+
+      await tester.pumpWidget(_TestHarness(state: state));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Uploading material'), findsOneWidget);
+      expect(find.text('42%'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    },
+  );
+
+  testWidgets('shows a selected file summary for picked book uploads', (
+    tester,
+  ) async {
+    final state = AddMaterialState(
+      type: study.MaterialType.book,
+      title: '',
+      author: '',
+      source: '',
+      selectedPaths: const [r'C:\imports\signals.pdf'],
+      chapters: const [],
+      isSaving: false,
+      isImporting: false,
+    );
+
+    await tester.pumpWidget(_TestHarness(state: state));
+    await tester.pumpAndSettle();
+
+    expect(find.text('signals.pdf'), findsOneWidget);
+    expect(
+      find.text('1 file selected. Tap Add to library to start the upload.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'shows a preparation modal while selected material is being processed',
+    (tester) async {
+      final state = AddMaterialState(
+        type: study.MaterialType.book,
+        title: '',
+        author: '',
+        source: '',
+        selectedPaths: const [r'C:\imports\signals.pdf'],
+        chapters: const [],
+        isSaving: false,
+        isImporting: false,
+        isPreparingSelection: true,
+        selectionStatus: 'Reading the selected document...',
+      );
+
+      await tester.pumpWidget(_TestHarness(state: state));
+      await tester.pump();
+
+      expect(find.text('Preparing material'), findsOneWidget);
+      expect(find.text('Reading the selected document...'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    },
+  );
 }
 
 class _TestHarness extends StatelessWidget {

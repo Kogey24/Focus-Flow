@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:drift/native.dart' show SqliteException;
 import 'package:ffmpeg_kit_audio_flutter/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_audio_flutter/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_audio_flutter/return_code.dart';
@@ -11,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/services/storage_alert_service.dart';
 import '../../core/extensions/string_extensions.dart';
 import '../../core/utils/pdf_toc_parser.dart';
 import '../../data/repositories/material_repository.dart';
@@ -22,15 +25,18 @@ import 'course_import_service.dart';
 
 part 'add_material_notifier.g.dart';
 
-@riverpod
+@Riverpod(keepAlive: true)
 class AddMaterialNotifier extends _$AddMaterialNotifier {
   static const MethodChannel _mediaFolderChannel = MethodChannel(
     'focus_flow/media_folder',
   );
   static const int _videoCompressionThresholdBytes = 25 * 1024 * 1024;
   static const int _audioCompressionThresholdBytes = 5 * 1024 * 1024;
+  static const int _sqliteFullResultCode = 13;
+  static const double _fileTransferPhaseWeight = 0.92;
   final Uuid _uuid = const Uuid();
   final PdfTocParser _parser = PdfTocParser();
+  double _lastReportedUploadProgress = -1;
 
   @override
   Future<AddMaterialState> build() async {
@@ -46,6 +52,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       isSaving: false,
       isImporting: false,
       importWarnings: [],
+      uploadProgress: 0,
     );
   }
 
@@ -66,6 +73,12 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         importWarnings: const [],
         thumbnailPath: null,
         importerLabel: null,
+        isPreparingSelection: false,
+        selectionStatus: null,
+        uploadProgress: 0,
+        uploadStatus: null,
+        saveError: null,
+        isStorageFull: false,
       ),
     );
   }
@@ -121,27 +134,65 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
 
     if (current.type == MaterialType.course) return;
 
-    final result = await FilePicker.pickFiles(
-      allowMultiple: current.type != MaterialType.book,
-      type: FileType.custom,
-      allowedExtensions: extensions,
-    );
-    if (result == null || result.files.isEmpty) return;
+    try {
+      final result = await FilePicker.pickFiles(
+        allowMultiple: current.type != MaterialType.book,
+        type: FileType.custom,
+        allowedExtensions: extensions,
+      );
+      if (result == null) {
+        _debugLog('[AddMaterial][files] Picker cancelled by the user.');
+        return;
+      }
+      if (result.files.isEmpty) {
+        _debugLog(
+          '[AddMaterial][files][warn] Picker returned an empty selection.',
+        );
+        _setSelectionError(
+          'No files were returned from the picker. Please try selecting the material again.',
+          fallback: current,
+        );
+        return;
+      }
 
-    final paths = result.files
-        .map((file) => file.path)
-        .whereType<String>()
-        .toList();
-    _debugLogBlock([
-      '[AddMaterial][files] Selected ${paths.length} ${current.type.label.toLowerCase()} file(s).',
-      for (var i = 0; i < paths.length; i++)
-        '[AddMaterial][files] file[$i]=${paths[i]}',
-    ]);
-    await _loadSelectedFiles(
-      paths,
-      selectedFolderPath: null,
-      folderIgnoredFilesCount: null,
-    );
+      final paths = result.files
+          .map((file) => file.path)
+          .whereType<String>()
+          .where((path) => path.trim().isNotEmpty)
+          .toList(growable: false);
+
+      if (paths.isEmpty) {
+        _debugLogBlock([
+          '[AddMaterial][files][warn] Picker returned ${result.files.length} file(s), but none exposed a readable cache path.',
+          for (var i = 0; i < result.files.length; i++)
+            '[AddMaterial][files][warn] raw[$i] name=${result.files[i].name} path=${result.files[i].path ?? '(null)'} identifier=${result.files[i].identifier ?? '(null)'}',
+        ]);
+        _setSelectionError(
+          'The selected file could not be opened from this location. Please choose a file stored on the device and try again.',
+          fallback: current,
+        );
+        return;
+      }
+
+      _debugLogBlock([
+        '[AddMaterial][files] Selected ${paths.length} ${current.type.label.toLowerCase()} file(s).',
+        for (var i = 0; i < paths.length; i++)
+          '[AddMaterial][files] file[$i]=${paths[i]}',
+      ]);
+      await _loadSelectedFiles(
+        paths,
+        selectedFolderPath: null,
+        folderIgnoredFilesCount: null,
+      );
+    } catch (error, stackTrace) {
+      _debugLog(
+        '[AddMaterial][files][error] The picker failed: $error\n$stackTrace',
+      );
+      _setSelectionError(
+        'The file picker could not open that material right now. Please try again.',
+        fallback: current,
+      );
+    }
   }
 
   Future<void> pickFolder() async {
@@ -186,6 +237,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           importError: 'Paste a course URL first.',
           importWarnings: const [],
           importerLabel: null,
+          saveError: null,
+          isStorageFull: false,
         ),
       );
       return;
@@ -196,6 +249,8 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         isImporting: true,
         importError: null,
         importWarnings: const [],
+        saveError: null,
+        isStorageFull: false,
       ),
     );
 
@@ -237,17 +292,26 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
           importWarnings: preview.warnings,
           thumbnailPath: preview.thumbnailUrl,
           importerLabel: preview.importerLabel,
+          saveError: null,
+          isStorageFull: false,
         ),
       );
     } on CourseImportException catch (error) {
       state = AsyncData(
-        current.copyWith(isImporting: false, importError: error.message),
+        current.copyWith(
+          isImporting: false,
+          importError: error.message,
+          saveError: null,
+          isStorageFull: false,
+        ),
       );
     } catch (_) {
       state = AsyncData(
         current.copyWith(
           isImporting: false,
           importError: 'The course outline could not be imported right now.',
+          saveError: null,
+          isStorageFull: false,
         ),
       );
     }
@@ -258,87 +322,139 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (current == null) return null;
 
     final materialId = _uuid.v4();
-    state = AsyncData(current.copyWith(isSaving: true));
-
-    final copiedPaths = await _copyFiles(
-      materialId,
-      current.selectedPaths,
-      selectedFolderPath: current.selectedFolderPath,
-      type: current.type,
-    );
-    final repository = ref.read(materialRepositoryProvider);
-    final firstFilePath = copiedPaths.isEmpty ? null : copiedPaths.first;
-
-    final updatedChapters = [
-      for (var i = 0; i < current.chapters.length; i++)
-        current.chapters[i].copyWith(
-          id: current.chapters[i].id == 'pending'
-              ? _uuid.v4()
-              : current.chapters[i].id,
-          materialId: materialId,
-          orderIndex: i,
-          filePath: copiedPaths.length > i
-              ? copiedPaths[i]
-              : current.chapters[i].filePath,
-        ),
-    ];
-
-    final title = current.title.trim().isEmpty
-        ? (current.type == MaterialType.course
-              ? _fallbackCourseTitle(current.source)
-              : (current.selectedPaths.isNotEmpty
-                    ? path.basename(current.selectedPaths.first).filenameLabel()
-                    : 'Untitled ${current.type.label}'))
-        : current.title.trim();
-
-    final material = StudyMaterial(
-      id: materialId,
-      title: title,
-      author: current.author.trim().isEmpty ? null : current.author.trim(),
-      type: current.type,
-      filePath: current.type == MaterialType.course
-          ? (current.source.trim().isEmpty ? null : current.source.trim())
-          : firstFilePath,
-      thumbnailPath: current.thumbnailPath,
-      totalDuration: current.totalDuration,
-      totalPages: current.totalPages,
-      createdAt: DateTime.now(),
-      status: 'not_started',
-      tags: current.source.trim().isEmpty ? const [] : [current.source.trim()],
-    );
-
-    _logSavePayload(
-      material: material,
-      chapters: updatedChapters,
-      selectedFolderPath: current.selectedFolderPath,
-      copiedPaths: copiedPaths,
-    );
-
-    await repository.saveMaterial(
-      material: material,
-      chapters: updatedChapters,
-    );
-
-    _debugLog(
-      '[AddMaterial][save] Material saved successfully with id=$materialId.',
-    );
-
-    state = const AsyncData(
-      AddMaterialState(
-        type: MaterialType.book,
-        title: '',
-        author: '',
-        source: '',
-        selectedPaths: [],
-        selectedFolderPath: null,
-        folderIgnoredFilesCount: null,
-        chapters: [],
-        isSaving: false,
-        isImporting: false,
-        importWarnings: [],
+    _lastReportedUploadProgress = -1;
+    state = AsyncData(
+      current.copyWith(
+        isSaving: true,
+        uploadProgress: 0,
+        uploadStatus: _initialUploadStatus(current),
+        saveError: null,
+        isStorageFull: false,
       ),
     );
-    return materialId;
+
+    try {
+      final copiedPaths = await _copyFiles(
+        materialId,
+        current.selectedPaths,
+        selectedFolderPath: current.selectedFolderPath,
+        type: current.type,
+        onProgress: _setUploadProgress,
+      );
+      final repository = ref.read(materialRepositoryProvider);
+      final firstFilePath = copiedPaths.isEmpty ? null : copiedPaths.first;
+
+      _setUploadProgress(
+        0.95,
+        status: current.selectedPaths.isEmpty
+            ? 'Saving material to the library...'
+            : 'Finishing the upload...',
+        force: true,
+      );
+
+      final updatedChapters = [
+        for (var i = 0; i < current.chapters.length; i++)
+          current.chapters[i].copyWith(
+            id: current.chapters[i].id == 'pending'
+                ? _uuid.v4()
+                : current.chapters[i].id,
+            materialId: materialId,
+            orderIndex: i,
+            filePath: copiedPaths.length > i
+                ? copiedPaths[i]
+                : current.chapters[i].filePath,
+          ),
+      ];
+
+      final title = current.title.trim().isEmpty
+          ? (current.type == MaterialType.course
+                ? _fallbackCourseTitle(current.source)
+                : (current.selectedPaths.isNotEmpty
+                      ? path
+                            .basename(current.selectedPaths.first)
+                            .filenameLabel()
+                      : 'Untitled ${current.type.label}'))
+          : current.title.trim();
+
+      final material = StudyMaterial(
+        id: materialId,
+        title: title,
+        author: current.author.trim().isEmpty ? null : current.author.trim(),
+        type: current.type,
+        filePath: current.type == MaterialType.course
+            ? (current.source.trim().isEmpty ? null : current.source.trim())
+            : firstFilePath,
+        thumbnailPath: current.thumbnailPath,
+        totalDuration: current.totalDuration,
+        totalPages: current.totalPages,
+        createdAt: DateTime.now(),
+        status: 'not_started',
+        tags: current.source.trim().isEmpty
+            ? const []
+            : [current.source.trim()],
+      );
+
+      _logSavePayload(
+        material: material,
+        chapters: updatedChapters,
+        selectedFolderPath: current.selectedFolderPath,
+        copiedPaths: copiedPaths,
+      );
+
+      await repository.saveMaterial(
+        material: material,
+        chapters: updatedChapters,
+      );
+
+      _setUploadProgress(1, status: 'Upload complete.', force: true);
+
+      _debugLog(
+        '[AddMaterial][save] Material saved successfully with id=$materialId.',
+      );
+
+      state = const AsyncData(
+        AddMaterialState(
+          type: MaterialType.book,
+          title: '',
+          author: '',
+          source: '',
+          selectedPaths: [],
+          selectedFolderPath: null,
+          folderIgnoredFilesCount: null,
+          chapters: [],
+          isSaving: false,
+          isImporting: false,
+          importWarnings: [],
+          uploadProgress: 0,
+        ),
+      );
+      return materialId;
+    } catch (error, stackTrace) {
+      final failure = _classifySaveFailure(error);
+      _debugLog(
+        '[AddMaterial][save] Save failed for id=$materialId: $error\n$stackTrace',
+      );
+      await _deleteCopiedFilesForMaterial(materialId);
+
+      if (failure.isStorageFull) {
+        unawaited(
+          ref
+              .read(storageAlertServiceProvider)
+              .notifyDatabaseFull(body: failure.message),
+        );
+      }
+
+      final latest = state.valueOrNull ?? current;
+      state = AsyncData(
+        latest.copyWith(
+          isSaving: false,
+          uploadStatus: null,
+          saveError: failure.message,
+          isStorageFull: failure.isStorageFull,
+        ),
+      );
+      return null;
+    }
   }
 
   Future<void> _loadSelectedFiles(
@@ -354,6 +470,11 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     var chapters = <Chapter>[];
     int? totalPages;
     int? totalDuration;
+    final nextTitle = _selectionTitleForPaths(
+      current: current,
+      sortedPaths: sortedPaths,
+      suggestedTitle: suggestedTitle,
+    );
 
     _debugLogBlock([
       '[AddMaterial][load] Received ${sortedPaths.length} path(s) for ${current.type.label.toLowerCase()}.',
@@ -363,114 +484,129 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         '[AddMaterial][load] input[$i]=${sortedPaths[i]}',
     ]);
 
-    if (current.type == MaterialType.book && sortedPaths.isNotEmpty) {
-      final parse = await _parser.parse(
-        materialId: 'pending',
-        filePath: sortedPaths.first,
-      );
-      chapters = parse.chapters;
-      totalPages = parse.totalPages;
-      _logPreparedStructure(
-        stage: 'parsed book structure',
-        type: current.type,
-        chapters: chapters,
-        selectedFolderPath: selectedFolderPath,
-        ignoredFilesCount: folderIgnoredFilesCount,
-        totalPages: totalPages,
-        totalDuration: totalDuration,
-      );
-    } else {
-      chapters = sortedPaths
-          .asMap()
-          .entries
-          .map((entry) {
-            return Chapter(
-              id: _uuid.v4(),
-              materialId: 'pending',
-              title: _mediaLabelForPath(
-                filePath: entry.value,
-                selectedFolderPath: selectedFolderPath,
-              ),
-              orderIndex: entry.key,
-              filePath: entry.value,
-            );
-          })
-          .toList(growable: false);
-
-      state = AsyncData(
-        current.copyWith(
-          title: suggestedTitle ?? current.title,
-          selectedPaths: sortedPaths,
-          selectedFolderPath: selectedFolderPath,
-          folderIgnoredFilesCount: folderIgnoredFilesCount,
-          chapters: chapters,
-          totalPages: null,
-          totalDuration: null,
-          importError: null,
-          importWarnings: const [],
-          thumbnailPath: null,
-          importerLabel: null,
-        ),
-      );
-
-      _logPreparedStructure(
-        stage: 'generated media items',
-        type: current.type,
-        chapters: chapters,
-        selectedFolderPath: selectedFolderPath,
-        ignoredFilesCount: folderIgnoredFilesCount,
-        totalPages: null,
-        totalDuration: null,
-      );
-
-      final chaptersWithDurations = await Future.wait(
-        chapters.map((chapter) async {
-          final seconds = await _probeDuration(chapter.filePath ?? '');
-          totalDuration = (totalDuration ?? 0) + (seconds ?? 0);
-          _debugLog(
-            '[AddMaterial][duration] "${chapter.title}" => ${seconds == null ? 'duration unavailable' : '$seconds seconds'}',
-          );
-          return chapter.copyWith(duration: seconds);
-        }),
-      );
-
-      final latest = state.valueOrNull;
-      if (latest == null || !listEquals(latest.selectedPaths, sortedPaths)) {
-        return;
-      }
-      state = AsyncData(
-        latest.copyWith(
-          chapters: chaptersWithDurations,
-          totalDuration: totalDuration,
-        ),
-      );
-      _logPreparedStructure(
-        stage: 'media durations resolved',
-        type: current.type,
-        chapters: chaptersWithDurations,
-        selectedFolderPath: selectedFolderPath,
-        ignoredFilesCount: folderIgnoredFilesCount,
-        totalPages: null,
-        totalDuration: totalDuration,
-      );
-      return;
-    }
-
     state = AsyncData(
       current.copyWith(
-        title: suggestedTitle ?? current.title,
+        title: nextTitle,
         selectedPaths: sortedPaths,
         selectedFolderPath: selectedFolderPath,
         folderIgnoredFilesCount: folderIgnoredFilesCount,
-        chapters: chapters,
-        totalPages: totalPages,
-        totalDuration: totalDuration,
+        chapters: const [],
+        totalPages: null,
+        totalDuration: null,
         importError: null,
         importWarnings: const [],
         thumbnailPath: null,
         importerLabel: null,
+        isPreparingSelection: true,
+        selectionStatus: _selectionStatusForPaths(
+          type: current.type,
+          sortedPaths: sortedPaths,
+        ),
+        saveError: null,
+        isStorageFull: false,
       ),
     );
+
+    try {
+      if (current.type == MaterialType.book && sortedPaths.isNotEmpty) {
+        final parse = await _parser.parse(
+          materialId: 'pending',
+          filePath: sortedPaths.first,
+        );
+        chapters = parse.chapters;
+        totalPages = parse.totalPages;
+        _logPreparedStructure(
+          stage: 'parsed book structure',
+          type: current.type,
+          chapters: chapters,
+          selectedFolderPath: selectedFolderPath,
+          ignoredFilesCount: folderIgnoredFilesCount,
+          totalPages: totalPages,
+          totalDuration: totalDuration,
+        );
+      } else {
+        chapters = sortedPaths
+            .asMap()
+            .entries
+            .map((entry) {
+              return Chapter(
+                id: _uuid.v4(),
+                materialId: 'pending',
+                title: _mediaLabelForPath(
+                  filePath: entry.value,
+                  selectedFolderPath: selectedFolderPath,
+                ),
+                orderIndex: entry.key,
+                filePath: entry.value,
+              );
+            })
+            .toList(growable: false);
+
+        state = AsyncData(
+          (state.valueOrNull ?? current).copyWith(chapters: chapters),
+        );
+
+        _logPreparedStructure(
+          stage: 'generated media items',
+          type: current.type,
+          chapters: chapters,
+          selectedFolderPath: selectedFolderPath,
+          ignoredFilesCount: folderIgnoredFilesCount,
+          totalPages: null,
+          totalDuration: null,
+        );
+
+        final chaptersWithDurations = await Future.wait(
+          chapters.map((chapter) async {
+            final seconds = await _probeDuration(chapter.filePath ?? '');
+            totalDuration = (totalDuration ?? 0) + (seconds ?? 0);
+            _debugLog(
+              '[AddMaterial][duration] "${chapter.title}" => ${seconds == null ? 'duration unavailable' : '$seconds seconds'}',
+            );
+            return chapter.copyWith(duration: seconds);
+          }),
+        );
+
+        final latest = state.valueOrNull;
+        if (latest == null || !listEquals(latest.selectedPaths, sortedPaths)) {
+          return;
+        }
+        state = AsyncData(
+          latest.copyWith(
+            chapters: chaptersWithDurations,
+            totalDuration: totalDuration,
+            isPreparingSelection: false,
+            selectionStatus: null,
+          ),
+        );
+        _logPreparedStructure(
+          stage: 'media durations resolved',
+          type: current.type,
+          chapters: chaptersWithDurations,
+          selectedFolderPath: selectedFolderPath,
+          ignoredFilesCount: folderIgnoredFilesCount,
+          totalPages: null,
+          totalDuration: totalDuration,
+        );
+        return;
+      }
+
+      state = AsyncData(
+        (state.valueOrNull ?? current).copyWith(
+          chapters: chapters,
+          totalPages: totalPages,
+          totalDuration: totalDuration,
+          isPreparingSelection: false,
+          selectionStatus: null,
+        ),
+      );
+    } catch (_) {
+      final latest = state.valueOrNull ?? current;
+      state = AsyncData(
+        latest.copyWith(isPreparingSelection: false, selectionStatus: null),
+      );
+      rethrow;
+    }
   }
 
   Future<List<String>> _copyFiles(
@@ -478,6 +614,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     List<String> sourcePaths, {
     required String? selectedFolderPath,
     required MaterialType type,
+    required void Function(double progress, {String? status}) onProgress,
   }) async {
     if (sourcePaths.isEmpty) return const [];
     final docsDir = await getApplicationDocumentsDirectory();
@@ -486,18 +623,46 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     );
     await materialDir.create(recursive: true);
 
+    final sourceFiles = sourcePaths.map(File.new).toList(growable: false);
+    final sourceSizes = await Future.wait(
+      sourceFiles.map((file) => file.length()),
+    );
+    final totalBytes = sourceSizes.fold<int>(0, (sum, value) => sum + value);
+    var completedBytes = 0;
     final copied = <String>[];
-    for (final sourcePath in sourcePaths) {
+    for (var i = 0; i < sourcePaths.length; i++) {
+      final sourcePath = sourcePaths[i];
+      final sourceSize = sourceSizes[i];
       final relativePath = selectedFolderPath == null
           ? path.basename(sourcePath)
           : path.relative(sourcePath, from: selectedFolderPath);
+      final itemStatus = sourcePaths.length == 1
+          ? 'Uploading material...'
+          : 'Uploading file ${i + 1} of ${sourcePaths.length}...';
+      onProgress(
+        _scaledUploadProgress(completedBytes, totalBytes),
+        status: itemStatus,
+      );
       copied.add(
         await _copyOrOptimizeMediaFile(
           sourcePath: sourcePath,
           destinationRoot: materialDir.path,
           relativePath: relativePath,
           type: type,
+          onProgress: (fileProgress) {
+            final processedBytes =
+                completedBytes + (sourceSize * fileProgress).round();
+            onProgress(
+              _scaledUploadProgress(processedBytes, totalBytes),
+              status: itemStatus,
+            );
+          },
         ),
+      );
+      completedBytes += sourceSize;
+      onProgress(
+        _scaledUploadProgress(completedBytes, totalBytes),
+        status: itemStatus,
       );
     }
     return copied;
@@ -727,13 +892,18 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     required String destinationRoot,
     required String relativePath,
     required MaterialType type,
+    required void Function(double progress) onProgress,
   }) async {
     final sourceFile = File(sourcePath);
     final originalDestination = path.join(destinationRoot, relativePath);
     await Directory(path.dirname(originalDestination)).create(recursive: true);
 
     if (!_shouldCompressFile(sourceFile: sourceFile, type: type)) {
-      await sourceFile.copy(originalDestination);
+      await _copyFileWithProgress(
+        sourceFile: sourceFile,
+        destinationFile: File(originalDestination),
+        onProgress: onProgress,
+      );
       return originalDestination;
     }
 
@@ -748,16 +918,22 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       sourcePath: sourcePath,
       destinationPath: optimizedDestination,
       type: type,
+      onProgress: (progress) => onProgress(progress * 0.85),
     );
 
     if (compressed != null) {
+      onProgress(1);
       return compressed;
     }
 
     if (await File(optimizedDestination).exists()) {
       await File(optimizedDestination).delete();
     }
-    await sourceFile.copy(originalDestination);
+    await _copyFileWithProgress(
+      sourceFile: sourceFile,
+      destinationFile: File(originalDestination),
+      onProgress: (progress) => onProgress(0.85 + (progress * 0.15)),
+    );
     return originalDestination;
   }
 
@@ -801,6 +977,7 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     required String sourcePath,
     required String destinationPath,
     required MaterialType type,
+    void Function(double progress)? onProgress,
   }) async {
     final sourceFile = File(sourcePath);
     final compressionArgs = await _compressionArguments(
@@ -811,7 +988,22 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     if (compressionArgs == null) return null;
 
     try {
-      final session = await FFmpegKit.executeWithArguments(compressionArgs);
+      final sourceDurationSeconds = await _probeDuration(sourcePath);
+      final session = await FFmpegKit.executeWithArgumentsAsync(
+        compressionArgs,
+        null,
+        null,
+        sourceDurationSeconds == null || sourceDurationSeconds <= 0
+            ? null
+            : (statistics) {
+                final elapsedSeconds = statistics.getTime() / 1000;
+                final progress = (elapsedSeconds / sourceDurationSeconds).clamp(
+                  0,
+                  0.99,
+                );
+                onProgress?.call(progress.toDouble());
+              },
+      );
       final returnCode = await session.getReturnCode();
       final outputFile = File(destinationPath);
       if (!ReturnCode.isSuccess(returnCode) || !await outputFile.exists()) {
@@ -828,6 +1020,34 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
       return destinationPath;
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<void> _copyFileWithProgress({
+    required File sourceFile,
+    required File destinationFile,
+    required void Function(double progress) onProgress,
+  }) async {
+    final totalBytes = await sourceFile.length();
+    if (totalBytes <= 0) {
+      await sourceFile.copy(destinationFile.path);
+      onProgress(1);
+      return;
+    }
+
+    final sink = destinationFile.openWrite();
+    var copiedBytes = 0;
+
+    try {
+      await for (final chunk in sourceFile.openRead()) {
+        sink.add(chunk);
+        copiedBytes += chunk.length;
+        onProgress((copiedBytes / totalBytes).clamp(0, 1).toDouble());
+      }
+      await sink.flush();
+      onProgress(1);
+    } finally {
+      await sink.close();
     }
   }
 
@@ -945,6 +1165,145 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final rounded = value.round();
     if (rounded <= 2) return 2;
     return rounded.isEven ? rounded : rounded - 1;
+  }
+
+  void _setUploadProgress(
+    double progress, {
+    String? status,
+    bool force = false,
+  }) {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    final normalized = progress.clamp(0, 1).toDouble();
+    final nextStatus = status ?? current.uploadStatus;
+    final shouldUpdate =
+        force ||
+        (normalized - _lastReportedUploadProgress).abs() >= 0.01 ||
+        nextStatus != current.uploadStatus;
+    if (!shouldUpdate) return;
+
+    _lastReportedUploadProgress = normalized;
+    state = AsyncData(
+      current.copyWith(uploadProgress: normalized, uploadStatus: nextStatus),
+    );
+  }
+
+  void _setSelectionError(String message, {AddMaterialState? fallback}) {
+    final current = state.valueOrNull ?? fallback;
+    if (current == null) return;
+
+    state = AsyncData(
+      current.copyWith(
+        isPreparingSelection: false,
+        selectionStatus: null,
+        saveError: message,
+        isStorageFull: false,
+      ),
+    );
+  }
+
+  String _selectionTitleForPaths({
+    required AddMaterialState current,
+    required List<String> sortedPaths,
+    required String? suggestedTitle,
+  }) {
+    if (suggestedTitle != null && suggestedTitle.trim().isNotEmpty) {
+      return suggestedTitle;
+    }
+    if (current.title.trim().isNotEmpty) {
+      return current.title;
+    }
+    if (sortedPaths.length == 1) {
+      return path.basename(sortedPaths.first).filenameLabel();
+    }
+    return current.title;
+  }
+
+  String _selectionStatusForPaths({
+    required MaterialType type,
+    required List<String> sortedPaths,
+  }) {
+    return switch (type) {
+      MaterialType.book => 'Reading the selected document...',
+      MaterialType.video when sortedPaths.length > 1 =>
+        'Preparing ${sortedPaths.length} video files...',
+      MaterialType.audio when sortedPaths.length > 1 =>
+        'Preparing ${sortedPaths.length} audio files...',
+      MaterialType.video => 'Preparing the selected video...',
+      MaterialType.audio => 'Preparing the selected audio...',
+      MaterialType.course => 'Preparing the selected material...',
+    };
+  }
+
+  double _scaledUploadProgress(int processedBytes, int totalBytes) {
+    if (totalBytes <= 0) return _fileTransferPhaseWeight;
+    final fileShare = (processedBytes / totalBytes).clamp(0, 1).toDouble();
+    return fileShare * _fileTransferPhaseWeight;
+  }
+
+  String _initialUploadStatus(AddMaterialState current) {
+    if (current.selectedPaths.isEmpty) {
+      return 'Saving material to the library...';
+    }
+    return current.selectedPaths.length == 1
+        ? 'Preparing the upload...'
+        : 'Preparing ${current.selectedPaths.length} files...';
+  }
+
+  _SaveFailure _classifySaveFailure(Object error) {
+    final errorText = error.toString().toLowerCase();
+    if (error is SqliteException && error.resultCode == _sqliteFullResultCode) {
+      return const _SaveFailure(
+        message:
+            'Focus Flow storage is full, so this material could not be saved. Clear some saved materials or app data, then try again.',
+        isStorageFull: true,
+      );
+    }
+
+    if (error is FileSystemException) {
+      final errorCode = error.osError?.errorCode;
+      if (errorCode == 28 ||
+          errorCode == 112 ||
+          errorText.contains('no space left on device') ||
+          errorText.contains('space left')) {
+        return const _SaveFailure(
+          message:
+              'Focus Flow storage is full, so this upload could not finish. Free up device space, then try again.',
+          isStorageFull: true,
+        );
+      }
+    }
+
+    if (errorText.contains('database or disk is full') ||
+        errorText.contains('sqlite_full') ||
+        errorText.contains('disk is full')) {
+      return const _SaveFailure(
+        message:
+            'Focus Flow storage is full, so this material could not be saved. Clear some saved materials or app data, then try again.',
+        isStorageFull: true,
+      );
+    }
+
+    return const _SaveFailure(
+      message:
+          'The material could not be added right now. Check the files and try again.',
+      isStorageFull: false,
+    );
+  }
+
+  Future<void> _deleteCopiedFilesForMaterial(String materialId) async {
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final materialDir = Directory(
+        path.join(docsDir.path, 'focusflow', 'materials', materialId),
+      );
+      if (await materialDir.exists()) {
+        await materialDir.delete(recursive: true);
+      }
+    } catch (_) {
+      // Best effort cleanup after a failed save.
+    }
   }
 
   void _debugLog(String message) {
@@ -1118,4 +1477,11 @@ class _PickedMediaFolder {
   final String folderName;
   final List<String> files;
   final int ignoredFilesCount;
+}
+
+class _SaveFailure {
+  const _SaveFailure({required this.message, required this.isStorageFull});
+
+  final String message;
+  final bool isStorageFull;
 }

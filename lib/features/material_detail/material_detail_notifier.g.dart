@@ -7,7 +7,7 @@ part of 'material_detail_notifier.dart';
 // **************************************************************************
 
 String _$materialDetailNotifierHash() =>
-    r'07ccfa210d18528f92d77c6c6c483f68632b32fe';
+    r'77a30027e89f925e0a90b505fcd3193381a06ea2';
 
 /// Copied from Dart SDK
 class _SystemHash {

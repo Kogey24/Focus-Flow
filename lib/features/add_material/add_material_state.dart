@@ -21,6 +21,12 @@ class AddMaterialState {
     this.importWarnings = const [],
     this.thumbnailPath,
     this.importerLabel,
+    this.isPreparingSelection = false,
+    this.selectionStatus,
+    this.uploadProgress = 0,
+    this.uploadStatus,
+    this.saveError,
+    this.isStorageFull = false,
   });
 
   final MaterialType type;
@@ -39,6 +45,12 @@ class AddMaterialState {
   final List<String> importWarnings;
   final String? thumbnailPath;
   final String? importerLabel;
+  final bool isPreparingSelection;
+  final String? selectionStatus;
+  final double uploadProgress;
+  final String? uploadStatus;
+  final String? saveError;
+  final bool isStorageFull;
 
   AddMaterialState copyWith({
     MaterialType? type,
@@ -57,6 +69,12 @@ class AddMaterialState {
     List<String>? importWarnings,
     Object? thumbnailPath = _unset,
     Object? importerLabel = _unset,
+    bool? isPreparingSelection,
+    Object? selectionStatus = _unset,
+    double? uploadProgress,
+    Object? uploadStatus = _unset,
+    Object? saveError = _unset,
+    bool? isStorageFull,
   }) {
     return AddMaterialState(
       type: type ?? this.type,
@@ -87,6 +105,16 @@ class AddMaterialState {
       importerLabel: importerLabel == _unset
           ? this.importerLabel
           : importerLabel as String?,
+      isPreparingSelection: isPreparingSelection ?? this.isPreparingSelection,
+      selectionStatus: selectionStatus == _unset
+          ? this.selectionStatus
+          : selectionStatus as String?,
+      uploadProgress: uploadProgress ?? this.uploadProgress,
+      uploadStatus: uploadStatus == _unset
+          ? this.uploadStatus
+          : uploadStatus as String?,
+      saveError: saveError == _unset ? this.saveError : saveError as String?,
+      isStorageFull: isStorageFull ?? this.isStorageFull,
     );
   }
 }
