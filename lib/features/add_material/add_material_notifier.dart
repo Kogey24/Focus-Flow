@@ -30,6 +30,9 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   static const MethodChannel _mediaFolderChannel = MethodChannel(
     'focus_flow/media_folder',
   );
+  static const MethodChannel _studyFilesChannel = MethodChannel(
+    'focus_flow/study_files',
+  );
   static const int _videoCompressionThresholdBytes = 25 * 1024 * 1024;
   static const int _audioCompressionThresholdBytes = 5 * 1024 * 1024;
   static const int _sqliteFullResultCode = 13;
@@ -92,6 +95,60 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
   void setSource(String value) =>
       _patch((current) => current.copyWith(source: value));
 
+  Future<void> refreshSelection() async {
+    final current = state.valueOrNull;
+
+    if (current == null) {
+      _debugLog(
+        '[AddMaterial][refresh] Resetting the page because no draft state is available.',
+      );
+      state = const AsyncLoading();
+      state = await AsyncValue.guard(build);
+      return;
+    }
+
+    if (current.isSaving ||
+        current.isPreparingSelection ||
+        current.isImporting) {
+      _debugLog(
+        '[AddMaterial][refresh] Ignored because the page is already busy.',
+      );
+      return;
+    }
+
+    if (current.type == MaterialType.course) {
+      if (current.source.trim().isEmpty) {
+        _debugLog(
+          '[AddMaterial][refresh] Nothing to refresh for course mode without a URL.',
+        );
+        return;
+      }
+
+      _debugLog('[AddMaterial][refresh] Re-fetching the course outline.');
+      await importCourseFromUrl();
+      return;
+    }
+
+    if (current.selectedPaths.isEmpty && current.selectedFolderPath == null) {
+      _debugLog(
+        '[AddMaterial][refresh] Nothing selected yet, so there is no material to re-process.',
+      );
+      state = AsyncData(
+        current.copyWith(saveError: null, isStorageFull: false),
+      );
+      return;
+    }
+
+    _debugLog(
+      '[AddMaterial][refresh] Re-processing ${current.selectedPaths.length} selected path(s).',
+    );
+    await _loadSelectedFiles(
+      current.selectedPaths,
+      selectedFolderPath: current.selectedFolderPath,
+      folderIgnoredFilesCount: current.folderIgnoredFilesCount,
+    );
+  }
+
   void addManualChapter() {
     final current = state.valueOrNull;
     if (current == null) return;
@@ -133,6 +190,43 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
     final extensions = _allowedExtensionsFor(current.type);
 
     if (current.type == MaterialType.course) return;
+
+    if (Platform.isAndroid) {
+      final androidResult = await _pickAndroidStudyFiles(
+        type: current.type,
+        allowedExtensions: extensions,
+        allowMultiple: current.type != MaterialType.book,
+      );
+      if (androidResult.handled) {
+        final selection = androidResult.selection;
+        if (selection == null) {
+          _debugLog('[AddMaterial][files] Picker cancelled by the user.');
+          return;
+        }
+        if (selection.paths.isEmpty) {
+          _setSelectionError(
+            selection.ignoredFilesCount > 0
+                ? 'The selected files are not supported for this material type. Please choose another file.'
+                : 'No files were returned from the picker. Please try selecting the material again.',
+            fallback: current,
+          );
+          return;
+        }
+
+        _debugLogBlock([
+          '[AddMaterial][files][android-channel] Selected ${selection.paths.length} ${current.type.label.toLowerCase()} file(s).',
+          '[AddMaterial][files][android-channel] ignoredFiles=${selection.ignoredFilesCount}',
+          for (var i = 0; i < selection.paths.length; i++)
+            '[AddMaterial][files][android-channel] file[$i]=${selection.paths[i]}',
+        ]);
+        await _loadSelectedFiles(
+          selection.paths,
+          selectedFolderPath: null,
+          folderIgnoredFilesCount: null,
+        );
+        return;
+      }
+    }
 
     try {
       final result = await FilePicker.pickFiles(
@@ -779,6 +873,63 @@ class AddMaterialNotifier extends _$AddMaterialNotifier {
         'Media folder channel failed, falling back to filesystem scan: ${error.message}',
       );
       return null;
+    }
+  }
+
+  Future<_AndroidPickedStudyFilesResult> _pickAndroidStudyFiles({
+    required MaterialType type,
+    required List<String> allowedExtensions,
+    required bool allowMultiple,
+  }) async {
+    if (allowedExtensions.isEmpty) {
+      return const _AndroidPickedStudyFilesResult(
+        handled: false,
+        selection: null,
+      );
+    }
+
+    try {
+      final result = await _studyFilesChannel
+          .invokeMapMethod<String, Object?>('pickStudyFiles', {
+            'allowedExtensions': allowedExtensions,
+            'allowMultiple': allowMultiple,
+            'materialType': type.label.toLowerCase(),
+          });
+      if (result == null) {
+        return const _AndroidPickedStudyFilesResult(
+          handled: true,
+          selection: null,
+        );
+      }
+
+      final paths =
+          (result['paths'] as List<Object?>?)?.whereType<String>().toList(
+            growable: false,
+          ) ??
+          const [];
+      final ignoredFilesCount =
+          (result['ignoredFilesCount'] as num?)?.toInt() ?? 0;
+      return _AndroidPickedStudyFilesResult(
+        handled: true,
+        selection: _PickedStudyFiles(
+          paths: paths,
+          ignoredFilesCount: ignoredFilesCount,
+        ),
+      );
+    } on MissingPluginException catch (error) {
+      debugPrint('Study file channel unavailable, falling back: $error');
+      return const _AndroidPickedStudyFilesResult(
+        handled: false,
+        selection: null,
+      );
+    } on PlatformException catch (error) {
+      debugPrint(
+        'Study file channel failed, falling back to file_picker: ${error.message}',
+      );
+      return const _AndroidPickedStudyFilesResult(
+        handled: false,
+        selection: null,
+      );
     }
   }
 
@@ -1477,6 +1628,26 @@ class _PickedMediaFolder {
   final String folderName;
   final List<String> files;
   final int ignoredFilesCount;
+}
+
+class _PickedStudyFiles {
+  const _PickedStudyFiles({
+    required this.paths,
+    required this.ignoredFilesCount,
+  });
+
+  final List<String> paths;
+  final int ignoredFilesCount;
+}
+
+class _AndroidPickedStudyFilesResult {
+  const _AndroidPickedStudyFilesResult({
+    required this.handled,
+    required this.selection,
+  });
+
+  final bool handled;
+  final _PickedStudyFiles? selection;
 }
 
 class _SaveFailure {

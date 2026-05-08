@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -13,11 +14,15 @@ import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     companion object {
+        private const val TAG = "FocusFlowPicker"
+        private const val REQUEST_STUDY_FILES = 40020
         private const val REQUEST_MEDIA_FOLDER = 40021
     }
 
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingStudyFilesResult: MethodChannel.Result? = null
+    private var pendingStudyFileExtensions: Set<String> = emptySet()
     private var pendingMediaFolderResult: MethodChannel.Result? = null
     private var pendingMediaExtensions: Set<String> = emptySet()
     private var pendingMediaType: String = ""
@@ -49,6 +54,63 @@ class MainActivity : FlutterActivity() {
                                 result.error("toc_extract_failed", error.message, null)
                             }
                         }
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "focus_flow/study_files"
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "pickStudyFiles" -> {
+                    if (pendingStudyFilesResult != null) {
+                        result.error("already_active", "A file picker is already active.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val rawExtensions = call.argument<List<String>>("allowedExtensions").orEmpty()
+                    val allowMultiple = call.argument<Boolean>("allowMultiple") == true
+                    if (rawExtensions.isEmpty()) {
+                        result.error("invalid_args", "allowedExtensions are required.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    pendingStudyFileExtensions = rawExtensions.map { it.lowercase() }.toSet()
+                    pendingStudyFilesResult = result
+
+                    val mimeTypes = StudyDocumentImporter.mimeTypesForExtensions(
+                        pendingStudyFileExtensions
+                    )
+                    Log.d(
+                        TAG,
+                        "Launching study file picker allowMultiple=$allowMultiple mimeTypes=$mimeTypes"
+                    )
+
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = if (mimeTypes.size == 1) mimeTypes.first() else "*/*"
+                        if (mimeTypes.size > 1) {
+                            putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+                        }
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+
+                    try {
+                        startActivityForResult(intent, REQUEST_STUDY_FILES)
+                    } catch (error: Exception) {
+                        Log.e(TAG, "Unable to launch study file picker", error)
+                        clearPendingStudyFilesRequest()
+                        result.error(
+                            "study_files_picker_unavailable",
+                            error.message ?: "The file picker could not be opened.",
+                            null
+                        )
                     }
                 }
 
@@ -90,6 +152,36 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_STUDY_FILES) {
+            val result = pendingStudyFilesResult
+            val allowedExtensions = pendingStudyFileExtensions
+            clearPendingStudyFilesRequest()
+
+            if (result == null) {
+                super.onActivityResult(requestCode, resultCode, data)
+                return
+            }
+
+            if (resultCode != Activity.RESULT_OK) {
+                Log.d(TAG, "Study file picker was cancelled.")
+                result.success(null)
+                return
+            }
+
+            val uris = StudyDocumentImporter.collectDocumentUris(data)
+            Log.d(TAG, "Study file picker returned ${uris.size} uri(s).")
+            if (uris.isEmpty()) {
+                result.error("study_files_pick_failed", "No files were selected.", null)
+                return
+            }
+
+            uris.forEach { uri ->
+                persistUriPermission(uri, data)
+            }
+            importSelectedStudyFiles(uris, allowedExtensions, result)
+            return
+        }
+
         if (requestCode == REQUEST_MEDIA_FOLDER) {
             val result = pendingMediaFolderResult
             pendingMediaFolderResult = null
@@ -110,7 +202,7 @@ class MainActivity : FlutterActivity() {
                 return
             }
 
-            persistFolderPermission(uri, data)
+            persistUriPermission(uri, data)
             importSelectedMediaFolder(uri, result)
             return
         }
@@ -118,13 +210,46 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
     }
 
-    private fun persistFolderPermission(uri: Uri, data: Intent?) {
+    private fun clearPendingStudyFilesRequest() {
+        pendingStudyFilesResult = null
+        pendingStudyFileExtensions = emptySet()
+    }
+
+    private fun persistUriPermission(uri: Uri, data: Intent?) {
         val grantedFlags = (data?.flags ?: 0) and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         try {
             contentResolver.takePersistableUriPermission(uri, grantedFlags)
         } catch (_: SecurityException) {
             // Some providers do not offer persistable permissions; transient access is still enough.
+        }
+    }
+
+    private fun importSelectedStudyFiles(
+        uris: List<Uri>,
+        allowedExtensions: Set<String>,
+        result: MethodChannel.Result,
+    ) {
+        backgroundExecutor.execute {
+            try {
+                val payload = StudyDocumentImporter.importFromDocuments(
+                    context = applicationContext,
+                    documentUris = uris,
+                    allowedExtensions = allowedExtensions,
+                )
+                mainHandler.post {
+                    result.success(payload)
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Study file import failed", error)
+                mainHandler.post {
+                    result.error(
+                        "study_files_import_failed",
+                        error.message ?: "The selected files could not be prepared.",
+                        null
+                    )
+                }
+            }
         }
     }
 

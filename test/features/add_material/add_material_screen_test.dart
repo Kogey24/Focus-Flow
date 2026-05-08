@@ -155,7 +155,7 @@ void main() {
   });
 
   testWidgets(
-    'shows a preparation modal while selected material is being processed',
+    'shows an in-page loading spinner before selected material is displayed',
     (tester) async {
       final state = AddMaterialState(
         type: study.MaterialType.book,
@@ -173,25 +173,55 @@ void main() {
       await tester.pumpWidget(_TestHarness(state: state));
       await tester.pump();
 
-      expect(find.text('Preparing material'), findsOneWidget);
+      expect(find.text('Loading selected material'), findsOneWidget);
       expect(find.text('Reading the selected document...'), findsOneWidget);
-      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.text('signals.pdf'), findsNothing);
     },
   );
+
+  testWidgets('pulling down refreshes the add material page state', (
+    tester,
+  ) async {
+    final notifier = _FakeAddMaterialNotifier(
+      AddMaterialState(
+        type: study.MaterialType.book,
+        title: '',
+        author: '',
+        source: '',
+        selectedPaths: const [r'C:\imports\signals.pdf'],
+        chapters: const [],
+        isSaving: false,
+        isImporting: false,
+      ),
+    );
+
+    await tester.pumpWidget(_TestHarness(notifier: notifier));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+
+    await tester.drag(find.byType(ListView).first, const Offset(0, 300));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(notifier.refreshCallCount, 1);
+  });
 }
 
 class _TestHarness extends StatelessWidget {
-  const _TestHarness({required this.state});
+  const _TestHarness({this.state, this.notifier})
+    : assert(state != null || notifier != null);
 
-  final AddMaterialState state;
+  final AddMaterialState? state;
+  final _FakeAddMaterialNotifier? notifier;
 
   @override
   Widget build(BuildContext context) {
+    final effectiveNotifier = notifier ?? _FakeAddMaterialNotifier(state!);
     return ProviderScope(
       overrides: [
-        addMaterialNotifierProvider.overrideWith(
-          () => _FakeAddMaterialNotifier(state),
-        ),
+        addMaterialNotifierProvider.overrideWith(() => effectiveNotifier),
       ],
       child: const MaterialApp(home: AddMaterialScreen()),
     );
@@ -202,7 +232,13 @@ class _FakeAddMaterialNotifier extends AddMaterialNotifier {
   _FakeAddMaterialNotifier(this._initialState);
 
   final AddMaterialState _initialState;
+  int refreshCallCount = 0;
 
   @override
   Future<AddMaterialState> build() async => _initialState;
+
+  @override
+  Future<void> refreshSelection() async {
+    refreshCallCount += 1;
+  }
 }
